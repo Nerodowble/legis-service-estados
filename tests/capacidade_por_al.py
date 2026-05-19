@@ -143,12 +143,15 @@ CAPACIDADES: dict[str, CapacidadeAL] = {
         data_apresentacao=NAO_DISPONIVEL,  # só no detalhe
         url_inteiro_teor=OBRIGATORIO,
         autores=OBRIGATORIO,      # extraído do "AUTOR(ES): ..." do <h3>
+        autor_partido=OPCIONAL,   # enriquecido via cache /parlamento/deputados
+        autor_id=OPCIONAL,
         status=OPCIONAL,
         detalhe_implementado=True,
         notas=[
             "HermesLegis Symfony",
             "Listagem RICA: <h3 class='fs-16'> tem ementa+autores; <div class='text-muted'> tem tipo+num+ano",
             "Padrão observado de autores no h3: 'AUTORES: DEPUTADO X E DEPUTADO Y'",
+            "Enriquecimento de partido via /parlamento/deputados (cache 6h)",
         ],
     ),
     "al_pa": CapacidadeAL(

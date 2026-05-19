@@ -24,6 +24,7 @@ from src.adapters.base import AdapterBase, FiltrosBusca
 from src.adapters.filtros import filtrar_local
 from src.config import settings
 from src.errors import ALIndisponivelError, ParserFalhouError
+from src.orquestrador.cache_parlamentares import CacheParlamentares
 from src.parsers import normalizar_texto, parse_html
 from src.parsers.encoding import decode_response
 from src.schemas import (
@@ -75,7 +76,84 @@ class AdapterMT(AdapterBase):
     SOURCE_ID = "al_mt"
     HOST_PRINCIPAL = BASE_URL
 
+    # Cache compartilhado de parlamentares (warm sob demanda + TTL 6h)
+    _cache = CacheParlamentares("al_mt")
+
+    async def _fetch_parlamentares(self) -> dict[str, dict[str, str]]:
+        """
+        Faz 1 fetch da página /parlamento/deputados e parseia 52 cards.
+        Estrutura observada (2026-05-19):
+          ...PSDB|CARLOS AVALLONE|Veja mais
+             Republicanos|DIEGO GUIMARÃES|Veja mais
+             MDB|EDUARDO BOTELHO|Veja mais...
+        Cada card: <a href="/parlamento/deputados/{id}/perfil"> + sigla partido
+        + nome + "Veja mais"
+        """
+        url = f"{BASE_URL}/parlamento/deputados"
+        try:
+            async with httpx.AsyncClient(
+                timeout=settings.HTTP_TIMEOUT_SECONDS,
+                headers={"User-Agent": settings.USER_AGENT},
+                follow_redirects=True,
+            ) as client:
+                r = await client.get(url)
+                r.raise_for_status()
+                html = decode_response(r)
+        except Exception:
+            return {}
+
+        tree = parse_html(html)
+        # Texto colapsado entre tags
+        texto = re.sub(r"<[^>]+>", "|", html)
+        texto = re.sub(r"\s+", " ", texto)
+
+        # Padrão observado: PARTIDO|NOME|Veja mais
+        # Lista de siglas de partido brasileiras conhecidas
+        partidos_validos = {
+            "PT", "PP", "PSD", "PL", "PDT", "PV", "PSB", "PSDB", "MDB",
+            "PSOL", "REDE", "REPUBLICANOS", "PODEMOS", "PODE", "AVANTE",
+            "NOVO", "PATRIOTA", "PROS", "PSC", "PCDOB", "PMN", "PMB", "DC",
+            "AGIR", "CIDADANIA", "SOLIDARIEDADE", "UNIÃO", "UNIAO", "UB",
+        }
+        cache: dict[str, dict[str, str]] = {}
+        # Padrão observado (com pipes separados por espaço):
+        #   "PSDB | |CHICO GUARNIERI| | |Veja mais|"
+        # Regex tolerante: aceita qualquer combinação de pipes/espaços entre os campos.
+        for m in re.finditer(
+            r"[\|\s]+([A-Za-zÁÉÍÓÚÂÊÔÃÕÇáéíóúâêôãõç]{2,15})"
+            r"[\|\s]+([A-ZÁÉÍÓÚÂÊÔÃÕÇ][A-ZÁÉÍÓÚÂÊÔÃÕÇ\s\.\-]+?)"
+            r"[\|\s]+Veja\s*mais",
+            texto,
+        ):
+            partido_raw = m.group(1).strip()
+            nome = m.group(2).strip()
+            # Validar partido (evitar capturar lixo)
+            if partido_raw.upper() not in partidos_validos:
+                continue
+            if 4 < len(nome) < 50:
+                cache[nome] = {"partido": partido_raw}
+
+        # Cruzar com IDs via <a href="/parlamento/deputados/N/perfil">
+        for a in tree.css('a[href*="/parlamento/deputados/"]'):
+            href = a.attributes.get("href", "")
+            m_id = re.search(r"/parlamento/deputados/(\d+)/perfil", href)
+            if not m_id:
+                continue
+            iddep = m_id.group(1)
+            # Tenta ligar com o nome próximo no DOM
+            pai = a.parent
+            if pai:
+                texto_card = re.sub(r"\s+", " ", pai.text(strip=True) or "")
+                for nome in cache:
+                    if nome in texto_card:
+                        cache[nome]["id"] = iddep
+                        break
+        return cache
+
     async def listar(self, filtros: FiltrosBusca) -> ResponseEnvelope:
+        # Warm-up do cache de parlamentares (silencioso se falhar)
+        await self._cache.warm(self._fetch_parlamentares)
+
         params: dict[str, str] = {}
         if filtros.ano:
             params["ano"] = str(filtros.ano)
@@ -111,6 +189,8 @@ class AdapterMT(AdapterBase):
 
     async def detalhe(self, id_proposicao: str) -> ResponseEnvelope:
         """GET direto na URL canônica /proposicao/cpdoc/{ID}/visualizar."""
+        # Warm-up do cache de parlamentares (para enriquecer autor)
+        await self._cache.warm(self._fetch_parlamentares)
         url = f"{BASE_URL}/proposicao/cpdoc/{id_proposicao}/visualizar"
 
         async with httpx.AsyncClient(
@@ -259,7 +339,17 @@ class AdapterMT(AdapterBase):
             if m_dep:
                 nome_limpo = m_dep.group(1).strip()
                 nome = f"Deputado {nome_limpo}"
-            autores.append(Autor(nome=nome, uf="MT", tipo=tipo))
+            partido = self._cache.partido_de(nome)
+            id_dep = self._cache.id_de(nome)
+            autores.append(
+                Autor(
+                    nome=nome,
+                    uf="MT",
+                    tipo=tipo,
+                    partido=partido,
+                    id_autor_origem=id_dep,
+                )
+            )
         return autores
 
     def _parsear_detalhe(
@@ -285,7 +375,17 @@ class AdapterMT(AdapterBase):
                     ementa = txt
                     break
 
-        autores = [Autor(nome=autor_nome, uf="MT", tipo="Deputado")] if autor_nome else []
+        autores = []
+        if autor_nome:
+            autores = [
+                Autor(
+                    nome=autor_nome,
+                    uf="MT",
+                    tipo="Deputado",
+                    partido=self._cache.partido_de(autor_nome),
+                    id_autor_origem=self._cache.id_de(autor_nome),
+                )
+            ]
 
         return ProposicaoNormalizadaRaw(
             id_proposicao_origem=id_proposicao,
