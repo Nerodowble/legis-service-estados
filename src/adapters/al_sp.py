@@ -69,7 +69,7 @@ class AdapterSP(AdapterBase):
                 response.raise_for_status()
             except httpx.HTTPStatusError as e:
                 raise ALIndisponivelError("SP", e.response.status_code, str(e)) from e
-            except (httpx.TimeoutException, httpx.ConnectError) as e:
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError) as e:
                 raise ALIndisponivelError("SP", None, str(e)) from e
 
             conteudo_zip = response.content
@@ -130,33 +130,67 @@ class AdapterSP(AdapterBase):
 
         return items, total_filtrado
 
+    # Mapeamento IdNatureza → sigla (estrutura ALESP validada ao vivo)
+    # Fonte: proposituras.xml + cross-check com numero/ano em www.al.sp.gov.br
+    _NATUREZA_PARA_SIGLA = {
+        "1": "PL",    # Projeto de Lei
+        "2": "PLC",   # Projeto de Lei Complementar
+        "3": "PEC",   # Proposta de Emenda à Constituição
+        "4": "PDL",   # Projeto de Decreto Legislativo
+        "5": "PR",    # Projeto de Resolução
+        "6": "MOC",   # Moção
+        "7": "IND",   # Indicação
+        "8": "REQ",   # Requerimento
+    }
+
+    # Mapeamento inverso para filtro upstream
+    _SIGLA_PARA_NATUREZA = {v: k for k, v in _NATUREZA_PARA_SIGLA.items()}
+
     def _aplica_filtros(self, elem, filtros: FiltrosBusca) -> bool:
         if filtros.ano:
-            ano = self._txt(elem, "anoLegislativo") or self._txt(elem, "ano")
+            ano = self._txt(elem, "AnoLegislativo")
             if ano and ano != str(filtros.ano):
                 return False
         if filtros.tipo:
-            sigla = (self._txt(elem, "siglaTipo") or "").upper()
-            if sigla and sigla != filtros.tipo.upper():
+            id_nat = self._txt(elem, "IdNatureza") or ""
+            sigla_alvo = filtros.tipo.upper()
+            sigla_obtida = self._NATUREZA_PARA_SIGLA.get(id_nat, "")
+            if sigla_obtida and sigla_obtida != sigla_alvo:
                 return False
         if filtros.numero:
-            numero = self._txt(elem, "numero")
+            numero = self._txt(elem, "NroLegislativo")
             if numero and numero != filtros.numero:
                 return False
         if filtros.keyword:
-            ementa = (self._txt(elem, "ementa") or "").lower()
+            ementa = (self._txt(elem, "Ementa") or "").lower()
             if filtros.keyword.lower() not in ementa:
                 return False
         return True
 
     def _normalizar(self, elem) -> ProposicaoNormalizadaRaw:
-        id_origem = self._txt(elem, "id") or self._txt(elem, "idDocumento") or ""
-        sigla = (self._txt(elem, "siglaTipo") or "PL").upper()
-        numero = self._txt(elem, "numero")
-        ano = self._int(elem, "anoLegislativo") or self._int(elem, "ano")
-        ementa = self._txt(elem, "ementa")
-        data = self._txt(elem, "dataEntrada") or self._txt(elem, "dataApresentacao")
-        autor_nome = self._txt(elem, "nomeAutor") or self._txt(elem, "autor")
+        """
+        Estrutura real do <propositura> (validada ao vivo 2026-05-19):
+          <AnoLegislativo>1996</AnoLegislativo>
+          <CodOriginalidade>(spaces)</CodOriginalidade>
+          <Ementa>...</Ementa>
+          <DtEntradaSistema>2004-01-17T00:00:00-02:00</DtEntradaSistema>
+          <DtPublicacao>1996-10-18T00:00:00-02:00</DtPublicacao>
+          <IdDocumento>3238</IdDocumento>
+          <IdNatureza>1</IdNatureza>
+          <NroLegislativo>673</NroLegislativo>
+
+        OBS: o dump proposituras.xml NÃO inclui autor; para autor, seria
+        necessário cruzar com autores.zip (fora do escopo atual).
+        """
+        id_origem = self._txt(elem, "IdDocumento") or ""
+        id_natureza = self._txt(elem, "IdNatureza") or ""
+        sigla = self._NATUREZA_PARA_SIGLA.get(id_natureza, "PL")
+        numero = self._txt(elem, "NroLegislativo")
+        ano = self._int(elem, "AnoLegislativo")
+        ementa = self._txt(elem, "Ementa")
+        # DtPublicacao é a data oficial; DtEntradaSistema é quando o sistema cadastrou
+        data = self._txt(elem, "DtPublicacao") or self._txt(elem, "DtEntradaSistema")
+        cod_orig = (self._txt(elem, "CodOriginalidade") or "").strip()
 
         return ProposicaoNormalizadaRaw(
             id_proposicao_origem=str(id_origem),
@@ -169,9 +203,11 @@ class AdapterSP(AdapterBase):
             url_inteiro_teor=(
                 f"{BASE_URL}/propositura/?id={id_origem}" if id_origem else None
             ),
-            autores=[Autor(nome=autor_nome, uf="SP", tipo="Deputado")] if autor_nome else [],
+            autores=[],  # ALESP: autor está em autores.zip (cross-reference futura)
             tramitacoes=[],
             dados_adicionais=DadosAdicionais(
+                codigoMateria=id_origem or None,
+                objetivo=cod_orig or None,
                 casaIdentificadora="ALESP",
                 enteIdentificador="SP",
                 tipoConteudo="Proposição",
@@ -200,9 +236,10 @@ class AdapterSP(AdapterBase):
     def _normalizar_data(self, s: str | None) -> str | None:
         if not s:
             return None
-        # ALESP usa "DD/MM/YYYY" ou ISO; deixamos a string ISO passar
+        # ALESP DtPublicacao: "1996-10-18T00:00:00-02:00" → "1996-10-18"
         if len(s) >= 10 and s[4] == "-":
             return s[:10]
+        # Formato DD/MM/YYYY
         if len(s) == 10 and s[2] == "/":
             return f"{s[6:10]}-{s[3:5]}-{s[0:2]}"
         return s

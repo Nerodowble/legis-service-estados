@@ -69,7 +69,7 @@ class AdapterBA(AdapterBase):
                 response.raise_for_status()
             except httpx.HTTPStatusError as e:
                 raise ALIndisponivelError("BA", e.response.status_code, str(e)) from e
-            except (httpx.TimeoutException, httpx.ConnectError) as e:
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError) as e:
                 raise ALIndisponivelError("BA", None, str(e)) from e
 
             html = decode_response(response)
@@ -105,13 +105,37 @@ class AdapterBA(AdapterBase):
         tree = parse_html(html)
         items: list[ProposicaoNormalizadaRaw] = []
 
-        for a in tree.css('a[href*="/atividade-legislativa-nova/proposicao/"]'):
+        # Estrutura real (validada ao vivo):
+        #   <tr class="table-itens">
+        #     <td class="mapa"><a href="/atividade-legislativa-nova/proposicao/REQ-10402-2024">...REQ/10402/2024...</a></td>
+        #     <td><span class="fe-html-ativ">Ementa aqui</span></td>
+        #     <td><a href="...pdf">Texto Original</a></td>
+        #   </tr>
+        for tr in tree.css("tr.table-itens"):
+            a = tr.css_first('a[href*="/atividade-legislativa-nova/proposicao/"]')
+            if not a:
+                continue
             href = a.attributes.get("href") or ""
             m = re.search(r"/atividade-legislativa-nova/proposicao/([A-Z]+-?[\d.]+-\d{4})", href)
             if not m:
                 continue
             slug = m.group(1)
             sigla, numero, ano = self._parsear_slug(slug)
+
+            # Ementa: <span class="fe-html-ativ"> dentro da 2ª <td>
+            ementa = None
+            ementa_el = tr.css_first("span.fe-html-ativ")
+            if ementa_el:
+                ementa = (ementa_el.text(strip=True) or "").lstrip("\xa0 ").strip() or None
+
+            # URL do PDF de texto original (3ª <td>)
+            url_pdf = None
+            for link in tr.css("a[href]"):
+                href_link = link.attributes.get("href") or ""
+                if href_link.lower().endswith(".pdf") or "texto" in (link.text() or "").lower():
+                    url_pdf = href_link if href_link.startswith("http") else f"{BASE_URL}{href_link}"
+                    break
+
             items.append(
                 ProposicaoNormalizadaRaw(
                     id_proposicao_origem=slug,
@@ -119,10 +143,11 @@ class AdapterBA(AdapterBase):
                     sigla_tipo=sigla,
                     numero=numero,
                     ano=ano,
-                    url_inteiro_teor=(
-                        f"{BASE_URL}/atividade-legislativa-nova/proposicao/{slug}"
-                    ),
+                    ementa=ementa,
+                    url_inteiro_teor=url_pdf
+                    or f"{BASE_URL}/atividade-legislativa-nova/proposicao/{slug}",
                     dados_adicionais=DadosAdicionais(
+                        codigoMateria=slug,
                         casaIdentificadora="ALBA",
                         enteIdentificador="BA",
                         tipoConteudo="Proposição",
@@ -134,11 +159,18 @@ class AdapterBA(AdapterBase):
             )
 
         items = filtrar_local(items, filtros)
+        total = len(items)
+        per_page = max(filtros.per_page, 1)
+        inicio = (filtros.page - 1) * per_page
+        fim = inicio + per_page
+        pagina = items[inicio:fim]
+        total_pages = (total // per_page) + (1 if total % per_page else 0)
+
         return ResponseEnvelope(
-            data=items,
-            total=len(items),
-            total_pages=1,
-            totals_by_nivel=TotalsByNivel(estadual=len(items)),
+            data=pagina,
+            total=total,
+            total_pages=max(total_pages, 1),
+            totals_by_nivel=TotalsByNivel(estadual=len(pagina)),
         )
 
     def _parsear_detalhe(

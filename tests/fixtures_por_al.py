@@ -54,30 +54,50 @@ ALAP_PARLAMENTARES = """<!DOCTYPE html><html><body>
 # ──────────────────────────────────────────────────────────────────────
 
 ALBA_LISTAGEM = """<!DOCTYPE html><html><body>
-<div class="lista">
-  <a href="/atividade-legislativa-nova/proposicao/REQ-10650-2025">REQ 10650/2025</a>
-  <a href="/atividade-legislativa-nova/proposicao/PL-1234-2024">PL 1234/2024</a>
-</div>
+<table>
+  <tr class="table-itens">
+    <td class="mapa">
+      <a href="/atividade-legislativa-nova/proposicao/REQ-10650-2025">
+        <span>REQ/10650/2025</span>
+      </a>
+    </td>
+    <td><span class="fe-html-ativ">Dispõe sobre a validade indeterminada do laudo médico que ateste o Diabetes Mellitus Tipo 1.</span></td>
+    <td><a href="https://www.al.ba.gov.br/docs/REQ-10650-2025.pdf">Texto Original</a></td>
+  </tr>
+  <tr class="table-itens">
+    <td class="mapa">
+      <a href="/atividade-legislativa-nova/proposicao/PL-1234-2024">
+        <span>PL/1234/2024</span>
+      </a>
+    </td>
+    <td><span class="fe-html-ativ">Cria programa estadual de incentivo à leitura.</span></td>
+    <td><a href="https://www.al.ba.gov.br/docs/PL-1234-2024.pdf">Texto Original</a></td>
+  </tr>
+</table>
 </body></html>"""
 
 # ──────────────────────────────────────────────────────────────────────
 # al_ce — ALECE PHP legado ISO-8859-1
 # ──────────────────────────────────────────────────────────────────────
 
-ALECE_LISTAGEM = (
-    """<!DOCTYPE html><html><body>
-<table><tr><td>
-Nº do Proj.: 1234/24
-Autor: Deputado João Silva
-Entrada: 15.03.24
-Ementa: Dispõe sobre subsídio ao petróleo no Estado do Ceará.
-Nº do Proj.: 1235/24
-Autor: Deputada Maria Souza
-Entrada: 20.03.24
-Ementa: Regulamenta o transporte escolar municipal.
-</td></tr></table>
-</body></html>""".encode("iso-8859-1")
-)
+ALECE_LISTAGEM = """<!DOCTYPE html><html><body>
+<table>
+  <tr><td>Exibindo registros 1 a 20 (de 2355)Página 1 de 118</td></tr>
+  <tr><td>Nº do Proj.:1234/24 Autor:DEPUTADO JOÃO SILVA Entrada:15.03.24 Expediente:20.03.24</td></tr>
+  <tr><td>Nº do Proj.:1234/24 Autor:DEPUTADO JOÃO SILVA Entrada:15.03.24 Expediente:20.03.24</td></tr>
+  <tr><td>Ementa:Dispõe sobre subsídio ao petróleo no Estado do Ceará.Descrição:</td></tr>
+  <tr><td>Ementa:Dispõe sobre subsídio ao petróleo no Estado do Ceará.</td></tr>
+  <tr><td>Descrição:</td></tr>
+  <tr><td>Distribuição/Comissões:CCJR/CASLocalização:CCJREm 15.03.24 - Departamento LegislativoEm 20.03.24 - Leitura no Expediente</td></tr>
+
+  <tr><td>Nº do Proj.:1235/24 Autor:DEPUTADA MARIA SOUZA Entrada:20.03.24</td></tr>
+  <tr><td>Nº do Proj.:1235/24 Autor:DEPUTADA MARIA SOUZA Entrada:20.03.24</td></tr>
+  <tr><td>Ementa:Regulamenta o transporte escolar municipal.Descrição:</td></tr>
+  <tr><td>Ementa:Regulamenta o transporte escolar municipal.</td></tr>
+  <tr><td>Descrição:</td></tr>
+  <tr><td>Distribuição/Comissões:CTASPLocalização:CTASPEm 20.03.24 - Departamento Legislativo</td></tr>
+</table>
+</body></html>""".encode("utf-8")
 
 # ──────────────────────────────────────────────────────────────────────
 # al_df — CLDF Liferay
@@ -201,26 +221,31 @@ import zipfile
 
 
 def alesp_zip_bytes() -> bytes:
-    """Cria um ZIP em memória com proposituras.xml mínimo."""
+    """
+    Cria um ZIP em memória com proposituras.xml mínimo.
+    Estrutura REAL validada ao vivo (2026-05-19) do dump ALESP.
+    """
     xml_content = b"""<?xml version="1.0" encoding="UTF-8"?>
 <proposituras>
   <propositura>
-    <id>9999</id>
-    <siglaTipo>PL</siglaTipo>
-    <numero>1</numero>
-    <anoLegislativo>2024</anoLegislativo>
-    <ementa>Cria programa de incentivo ambiental em SP.</ementa>
-    <dataEntrada>2024-03-15</dataEntrada>
-    <nomeAutor>Deputado Ricardo Santos</nomeAutor>
+    <AnoLegislativo>2024</AnoLegislativo>
+    <CodOriginalidade>                              </CodOriginalidade>
+    <Ementa>Cria programa de incentivo ambiental em SP.</Ementa>
+    <DtEntradaSistema>2024-03-15T00:00:00-03:00</DtEntradaSistema>
+    <DtPublicacao>2024-03-15T00:00:00-03:00</DtPublicacao>
+    <IdDocumento>9999</IdDocumento>
+    <IdNatureza>1</IdNatureza>
+    <NroLegislativo>1</NroLegislativo>
   </propositura>
   <propositura>
-    <id>9998</id>
-    <siglaTipo>PEC</siglaTipo>
-    <numero>2</numero>
-    <anoLegislativo>2024</anoLegislativo>
-    <ementa>Altera Constituicao Estadual.</ementa>
-    <dataEntrada>2024-04-20</dataEntrada>
-    <nomeAutor>Mesa Diretora</nomeAutor>
+    <AnoLegislativo>2024</AnoLegislativo>
+    <CodOriginalidade>                              </CodOriginalidade>
+    <Ementa>Altera Constituicao Estadual.</Ementa>
+    <DtEntradaSistema>2024-04-20T00:00:00-03:00</DtEntradaSistema>
+    <DtPublicacao>2024-04-20T00:00:00-03:00</DtPublicacao>
+    <IdDocumento>9998</IdDocumento>
+    <IdNatureza>3</IdNatureza>
+    <NroLegislativo>2</NroLegislativo>
   </propositura>
 </proposituras>"""
     buf = io.BytesIO()

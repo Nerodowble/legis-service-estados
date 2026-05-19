@@ -28,6 +28,7 @@ from src.config import settings
 from src.errors import ALIndisponivelError
 from src.parsers import normalizar_texto, parse_html
 from src.schemas import (
+    Autor,
     DadosAdicionais,
     ProposicaoNormalizadaRaw,
     ResponseEnvelope,
@@ -68,7 +69,7 @@ class AdapterMA(AdapterBase):
                 response.raise_for_status()
             except httpx.HTTPStatusError as e:
                 raise ALIndisponivelError("MA", e.response.status_code, str(e)) from e
-            except (httpx.TimeoutException, httpx.ConnectError) as e:
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError) as e:
                 raise ALIndisponivelError("MA", None, str(e)) from e
 
             total = int(response.headers.get("X-WP-Total", "0"))
@@ -103,10 +104,14 @@ class AdapterMA(AdapterBase):
         # Notas:
         #  - autor: aceita letras/acentos/espaços até o "QUE" da ementa
         #  - ementa: aceita até o próximo PROJETO/PEC/etc ou ponto final
+        # Autor pode ser: DEPUTADO X, DEPUTADA Y, PODER EXECUTIVO, MESA DIRETORA,
+        # COMISSÃO Z, BANCADA W, etc.
         padrao = re.compile(
-            r"(?P<tipo>PROJETO DE LEI(?:\s+ORDIN[ÁA]RIA|\s+COMPLEMENTAR)?|PEC|PDL|REQUERIMENTO|INDICAÇÃO|MOÇÃO)"
+            r"(?P<tipo>PROJETO DE LEI(?:\s+ORDIN[ÁA]RIA|\s+COMPLEMENTAR)?|PEC|PDL|REQUERIMENTO|INDICA[ÇC][ÃA]O|MO[ÇC][ÃA]O)"
             r"\s+N[º°]\s*(?P<num>\d+)\s*/\s*(?P<ano>\d{4})"
-            r"(?:[\s,]*DE\s+AUTORIA\s+DO?\s+DEPUTAD[OA]\s+(?P<autor>[A-ZÁÉÍÓÚÂÊÔÃÕÇ][A-ZÁÉÍÓÚÂÊÔÃÕÇ\s\.]+?))?"
+            r"(?:[\s,]*DE\s+AUTORIA\s+(?:DO|DA|DOS|DAS)?\s*"
+            r"(?P<tipo_autor>DEPUTAD[OA]|PODER\s+EXECUTIVO|MESA\s+DIRETORA|COMISS[ÃA]O|BANCADA|PODER\s+JUDICI[ÁA]RIO|MINIST[ÉE]RIO\s+P[ÚU]BLICO|TRIBUNAL\s+DE\s+CONTAS)?"
+            r"\s*(?P<autor>[A-ZÁÉÍÓÚÂÊÔÃÕÇ][A-ZÁÉÍÓÚÂÊÔÃÕÇa-zçáéíóú\s\.]+?))?"
             r"(?:[\s,]+QUE\s+(?P<ementa>.+?))?"
             r"(?=\s+(?:PROJETO|PEC|PDL|REQUERIMENTO|INDICA[ÇC][ÃA]O|MO[ÇC][ÃA]O)\s+N|\s*$|\.\s*$)",
             re.IGNORECASE | re.DOTALL,
@@ -129,7 +134,33 @@ class AdapterMA(AdapterBase):
             vistos.add(chave)
 
             autor = normalizar_texto(m.group("autor"))
+            tipo_autor_bruto = (m.group("tipo_autor") or "").upper()
             ementa = normalizar_texto(m.group("ementa"))
+
+            # Classificar tipo do autor
+            if "DEPUTAD" in tipo_autor_bruto:
+                tipo_autor = "Deputado"
+                nome_autor = f"Deputado {autor}" if autor else None
+            elif "EXECUTIVO" in tipo_autor_bruto:
+                tipo_autor = "Executivo"
+                nome_autor = "Poder Executivo"
+            elif "MESA" in tipo_autor_bruto:
+                tipo_autor = "Comissao"
+                nome_autor = "Mesa Diretora"
+            elif "COMISS" in tipo_autor_bruto:
+                tipo_autor = "Comissao"
+                nome_autor = f"Comissão {autor}" if autor else "Comissão"
+            elif "BANCADA" in tipo_autor_bruto:
+                tipo_autor = "Comissao"
+                nome_autor = f"Bancada {autor}" if autor else "Bancada"
+            elif tipo_autor_bruto:
+                tipo_autor = "Outro"
+                nome_autor = f"{tipo_autor_bruto.title()} {autor or ''}".strip()
+            else:
+                tipo_autor = "Outro"
+                nome_autor = autor
+
+            autores_list = [Autor(nome=nome_autor, uf="MA", tipo=tipo_autor)] if nome_autor else []
 
             items.append(
                 ProposicaoNormalizadaRaw(
@@ -141,7 +172,7 @@ class AdapterMA(AdapterBase):
                     ementa=ementa,
                     data_apresentacao=(ordem.get("date") or "")[:10],
                     url_inteiro_teor=ordem.get("link"),
-                    autores=[],  # autor extraído da pauta não é estruturado
+                    autores=autores_list,
                     tramitacoes=[],
                     dados_adicionais=DadosAdicionais(
                         casaIdentificadora="ALEMA",

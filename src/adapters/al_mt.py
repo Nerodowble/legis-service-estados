@@ -102,7 +102,7 @@ class AdapterMT(AdapterBase):
                 response.raise_for_status()
             except httpx.HTTPStatusError as e:
                 raise ALIndisponivelError("MT", e.response.status_code, str(e)) from e
-            except (httpx.TimeoutException, httpx.ConnectError) as e:
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError) as e:
                 raise ALIndisponivelError("MT", None, str(e)) from e
 
             html = decode_response(response)

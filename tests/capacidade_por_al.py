@@ -189,8 +189,13 @@ CAPACIDADES: dict[str, CapacidadeAL] = {
         casa_identificadora="ALESP",
         ementa=OBRIGATORIO,
         data_apresentacao=OBRIGATORIO,
-        autores=OBRIGATORIO,
+        autores=NAO_DISPONIVEL,  # proposituras.xml NÃO inclui autor (vem em autores.zip)
         url_inteiro_teor=OBRIGATORIO,
-        notas=["Dumps ZIP/XML; streaming-parse de <propositura>"],
+        codigo_materia=OBRIGATORIO,  # = IdDocumento
+        notas=[
+            "Dumps ZIP/XML; streaming-parse de <propositura>",
+            "Estrutura real: AnoLegislativo, IdDocumento, IdNatureza, NroLegislativo, Ementa, DtPublicacao",
+            "Autor NÃO está em proposituras.xml; cruzar com autores.zip seria etapa futura",
+        ],
     ),
 }

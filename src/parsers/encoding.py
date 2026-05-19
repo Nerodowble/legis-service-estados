@@ -36,13 +36,42 @@ def _detectar_charset(body_bytes: bytes, content_type: str) -> str:
 
 
 def decode_response(response: httpx.Response) -> str:
-    """Decodifica response.content respeitando o encoding correto."""
+    """
+    Decodifica response.content respeitando o encoding correto.
+
+    Estratégia robusta: alguns servidores legados (ex: ALECE) declaram
+    `ISO-8859-1` no Content-Type mas na verdade servem UTF-8. Se o decode
+    pelo header declarado produzir muitos U+FFFD, testamos UTF-8 e
+    preferimos o que minimizar mojibake.
+    """
     charset = _detectar_charset(response.content, response.headers.get("content-type", ""))
+
+    def _safe_decode(enc: str) -> tuple[str, int]:
+        try:
+            decoded = response.content.decode(enc, errors="replace")
+        except LookupError:
+            return "", 10**9
+        # contar caracteres "replacement" (U+FFFD = '�' = '?')
+        bad = decoded.count("�")
+        return decoded, bad
+
+    declarado, bad_declarado = _safe_decode(charset)
+
+    # Otimização: se declarado é UTF-8 e funciona perfeito, retorna logo
+    if charset.startswith("utf") and bad_declarado == 0:
+        return declarado
+
+    # Tentar UTF-8 strict — se passar sem erro, é UTF-8 de fato (servidor mentiu)
     try:
-        return response.content.decode(charset, errors="replace")
-    except LookupError:
-        # encoding desconhecido pelo Python — fallback latin-1 nunca falha
-        return response.content.decode("iso-8859-1", errors="replace")
+        utf8_strict = response.content.decode("utf-8")
+        return utf8_strict
+    except UnicodeDecodeError:
+        pass
+
+    # Conteúdo NÃO é UTF-8 válido — usar o declarado (ou fallback iso-8859-1)
+    if declarado:
+        return declarado
+    return response.content.decode("iso-8859-1", errors="replace")
 
 
 async def fetch_com_encoding(
