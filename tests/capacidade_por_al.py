@@ -94,7 +94,12 @@ CAPACIDADES: dict[str, CapacidadeAL] = {
         data_apresentacao=OBRIGATORIO,
         autores=OBRIGATORIO,
         url_inteiro_teor=OPCIONAL,
-        notas=["PHP legado ISO-8859-1; ementa+autor+data extraídos por regex no texto"],
+        detalhe_implementado=True,
+        notas=[
+            "PHP legado UTF-8 (declara ISO-8859-1 mas serve UTF-8)",
+            "Parser de TRs adjacentes (item ocupa 6 TRs)",
+            "Detalhe: filtra listagem por (numero, ano) — não há endpoint per-item",
+        ],
     ),
     "al_df": CapacidadeAL(
         source_id="al_df",
@@ -118,8 +123,13 @@ CAPACIDADES: dict[str, CapacidadeAL] = {
         ementa=OBRIGATORIO,  # extraída por regex do content.rendered
         data_apresentacao=OPCIONAL,
         url_inteiro_teor=OBRIGATORIO,
-        autores=NAO_DISPONIVEL,  # autor aparece no texto mas não é estruturado
-        notas=["WordPress REST; PLs vêm dentro de Ordens do Dia (HTML embarcado)"],
+        autores=OPCIONAL,  # autor agora estruturado (Deputado/Executivo/Mesa/Comissão)
+        detalhe_implementado=True,
+        notas=[
+            "WordPress REST; PLs vêm dentro de Ordens do Dia (HTML embarcado)",
+            "Autor classificado: Deputado, Executivo (Poder Executivo), Comissao (Mesa, Comissão, Bancada)",
+            "Detalhe: filtra ordens do ano alvo por (sigla, numero, ano)",
+        ],
     ),
     "al_mt": CapacidadeAL(
         source_id="al_mt",
@@ -146,7 +156,12 @@ CAPACIDADES: dict[str, CapacidadeAL] = {
         autores=OBRIGATORIO,
         status=OBRIGATORIO,  # sempre "Em tramitação" no CallbackPanelProposicoes
         url_inteiro_teor=OBRIGATORIO,
-        notas=["DevExpress; cards .card-proposicao com h3/span/p"],
+        detalhe_implementado=True,
+        notas=[
+            "DevExpress; cards .card-proposicao com h3/span/p",
+            "Detalhe: /Legislativo/DetalhesProposicao?IdProposicao=N",
+            "Detalhe enriquece com regime, situação, anexos PDF",
+        ],
     ),
     "al_pe": CapacidadeAL(
         source_id="al_pe",
@@ -155,7 +170,11 @@ CAPACIDADES: dict[str, CapacidadeAL] = {
         ementa=OBRIGATORIO,
         data_apresentacao=OBRIGATORIO,
         autores=OBRIGATORIO,
-        notas=["XML público com atributos no <projeto>"],
+        detalhe_implementado=True,
+        notas=[
+            "XML público com atributos no <projeto>",
+            "Detalhe: filtra docid no XML completo (sem endpoint per-item)",
+        ],
     ),
     "al_rj": CapacidadeAL(
         source_id="al_rj",
@@ -169,7 +188,11 @@ CAPACIDADES: dict[str, CapacidadeAL] = {
         url_inteiro_teor=OBRIGATORIO,
         autores=OPCIONAL,
         status=OPCIONAL,
-        notas=["IBM Lotus Notes; XML com columnnumber"],
+        detalhe_implementado=True,
+        notas=[
+            "IBM Lotus Notes; XML com columnnumber",
+            "Detalhe: GET {base}.nsf/{UNID}?OpenDocument (tenta 3 bases: scpro2327, scpro, contlei)",
+        ],
     ),
     "al_sc": CapacidadeAL(
         source_id="al_sc",
@@ -192,10 +215,12 @@ CAPACIDADES: dict[str, CapacidadeAL] = {
         autores=NAO_DISPONIVEL,  # proposituras.xml NÃO inclui autor (vem em autores.zip)
         url_inteiro_teor=OBRIGATORIO,
         codigo_materia=OBRIGATORIO,  # = IdDocumento
+        detalhe_implementado=True,
         notas=[
             "Dumps ZIP/XML; streaming-parse de <propositura>",
             "Estrutura real: AnoLegislativo, IdDocumento, IdNatureza, NroLegislativo, Ementa, DtPublicacao",
             "Autor NÃO está em proposituras.xml; cruzar com autores.zip seria etapa futura",
+            "Detalhe: streaming-parse + filtro por IdDocumento (mesmo download que listagem)",
         ],
     ),
 }

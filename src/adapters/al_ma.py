@@ -187,6 +187,45 @@ class AdapterMA(AdapterBase):
 
         return items
 
+    async def detalhe(self, id_proposicao: str) -> ResponseEnvelope:
+        """
+        Detalhe ALEMA: id é o slug "{SIGLA}-{NUM}-{ANO}" gerado pelo adapter.
+        Como cada PL vem embarcado em uma "Ordem do Dia" no WordPress REST,
+        e o WP-JSON não expõe filtro direto, percorremos várias ordens
+        recentes do ano alvo e devolvemos a primeira que casar.
+        """
+        from src.errors import ProposicaoNaoEncontradaError
+
+        m = re.match(r"([A-Z]+)-(\d+)-(\d{4})", id_proposicao)
+        if not m:
+            raise ProposicaoNaoEncontradaError("MA", id_proposicao)
+        sigla_alvo = m.group(1)
+        numero_alvo = m.group(2)
+        ano_alvo = int(m.group(3))
+
+        # Buscar até 50 ordens do ano (geralmente cobre tudo)
+        try:
+            envelope = await self.listar(
+                FiltrosBusca(page=1, per_page=50, ano=ano_alvo, tipo=sigla_alvo, numero=numero_alvo)
+            )
+        except Exception as e:
+            raise ALIndisponivelError("MA", None, str(e)) from e
+
+        for item in envelope.data:
+            if (
+                item.sigla_tipo == sigla_alvo
+                and item.numero == numero_alvo
+                and item.ano == ano_alvo
+            ):
+                return ResponseEnvelope(
+                    data=[item],
+                    total=1,
+                    total_pages=1,
+                    totals_by_nivel=TotalsByNivel(estadual=1),
+                )
+
+        raise ProposicaoNaoEncontradaError("MA", id_proposicao)
+
     def _normalizar_sigla(self, texto: str) -> str:
         t = texto.upper().strip()
         if "PROJETO DE LEI COMPLEMENTAR" in t:

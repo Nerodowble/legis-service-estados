@@ -243,3 +243,53 @@ class AdapterSP(AdapterBase):
         if len(s) == 10 and s[2] == "/":
             return f"{s[6:10]}-{s[3:5]}-{s[0:2]}"
         return s
+
+    async def detalhe(self, id_proposicao: str) -> ResponseEnvelope:
+        """
+        Detalhe via filtro por IdDocumento no dump completo (streaming).
+
+        ALESP não expõe endpoint single-item — baixa proposituras.zip e
+        itera procurando o IdDocumento. Custo idêntico à listagem do ano
+        completo (uma vez que o dump é único).
+        """
+        from src.errors import ProposicaoNaoEncontradaError
+
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(60.0, connect=10.0),
+            headers={"User-Agent": settings.USER_AGENT},
+            follow_redirects=True,
+        ) as client:
+            try:
+                response = await client.get(URL_DUMP_PROPOSITURAS)
+                response.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                raise ALIndisponivelError("SP", e.response.status_code, str(e)) from e
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError) as e:
+                raise ALIndisponivelError("SP", None, str(e)) from e
+            conteudo_zip = response.content
+
+        with zipfile.ZipFile(io.BytesIO(conteudo_zip)) as zf:
+            xml_names = [n for n in zf.namelist() if n.lower().endswith(".xml")]
+            if not xml_names:
+                raise ParserFalhouError("SP", "ZIP sem .xml")
+            with zf.open(xml_names[0]) as xml_stream:
+                contexto = etree.iterparse(
+                    xml_stream, events=("end",), tag="propositura", recover=True
+                )
+                for _, elem in contexto:
+                    id_doc = self._txt(elem, "IdDocumento")
+                    if id_doc == str(id_proposicao):
+                        item = self._normalizar(elem)
+                        return ResponseEnvelope(
+                            data=[item],
+                            total=1,
+                            total_pages=1,
+                            totals_by_nivel=TotalsByNivel(estadual=1),
+                        )
+                    elem.clear()
+                    parent = elem.getparent()
+                    if parent is not None:
+                        while elem.getprevious() is not None:
+                            del parent[0]
+
+        raise ProposicaoNaoEncontradaError("SP", id_proposicao)

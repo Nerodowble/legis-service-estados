@@ -288,6 +288,93 @@ def test_bug_willian_detalhe_al_ap_108457_retorna_dados(client: TestClient):
     assert item["ementa_detalhada"] == "Tramitação acelerada."
 
 
+HTML_ALEPA_DETALHE = """<!DOCTYPE html>
+<html><head><title>INDICAÇÃO Nº 142/2024 - ALEPA</title></head>
+<body>
+<div class="items-container">
+  <p>Tipo de Proposição: INDICAÇÃO</p>
+  <p>Número: 142</p>
+  <p>Origem: INTERNA</p>
+  <p>Entrada: MESA DIRETORA</p>
+  <p>Data da Entrada: 18/12/2024</p>
+  <p>Autor: DEP. LÍVIA DUARTE</p>
+  <p>Ementa: Requer ao Governador a criação do Programa.</p>
+  <p>Regime: MATÉRIA EM REGIME NORMAL</p>
+  <p>Situação: DEFERIDA</p>
+</div>
+<a href="https://downloads.alepa.pa.gov.br/Projeto/Anexo/14341-1.PDF">Download</a>
+</body></html>"""
+
+
+@respx.mock
+def test_detalhe_al_pa_extrai_todos_campos(client: TestClient):
+    """Valida detalhe al_pa: 9 campos do <p><strong>Label:</strong>...</p>."""
+    respx.get("https://www.alepa.pa.gov.br/Legislativo/DetalhesProposicao").mock(
+        return_value=Response(200, text=HTML_ALEPA_DETALHE,
+                              headers={"Content-Type": "text/html; charset=utf-8"})
+    )
+    r = client.get("/propositions/fetch-live/al_pa/14341")
+    assert r.status_code == 200
+    item = r.json()["data"][0]
+    assert item["id_proposicao_origem"] == "14341"
+    assert item["sigla_tipo"] == "IND"
+    assert item["numero"] == "142"
+    assert item["ano"] == 2024
+    assert item["status"] == "DEFERIDA"
+    assert item["data_apresentacao"] == "2024-12-18"
+    assert "Requer" in item["ementa"]
+    assert item["autores"][0]["nome"] == "DEP. LÍVIA DUARTE"
+    assert "MATÉRIA EM REGIME NORMAL" in (item["ementa_detalhada"] or "")
+    assert item["dados_adicionais"]["objetivo"] == "INTERNA"
+    assert ".PDF" in item["url_inteiro_teor"]
+
+
+XML_ALEPE_DETALHE = b"""<?xml version="1.0" encoding="UTF-8"?>
+<projetos>
+  <projeto docid="16370" numero="33" ano="2026"
+           legislatura="VIGESIMA" tipo="PROPOSTA DE EMENDA A CONSTITUICAO"
+           ementa="Altera a Constituicao do Estado." dataPublicacao="31/03/2026">
+    <autores><autor nome="Joao Paulo do PT" tipo="DEPUTADO"/></autores>
+  </projeto>
+</projetos>"""
+
+
+@respx.mock
+def test_detalhe_al_pe_filtra_docid_da_lista(client: TestClient):
+    """ALEPE não tem endpoint per-item; detalhe filtra docid da listagem."""
+    respx.get("https://dadosabertos.alepe.pe.gov.br/api/v1/proposicoes/projetos/").mock(
+        return_value=Response(200, content=XML_ALEPE_DETALHE,
+                              headers={"Content-Type": "application/xml"})
+    )
+    respx.get("https://dadosabertos.alepe.pe.gov.br/api/v1/proposicoes/indicacoes/").mock(
+        return_value=Response(404, text="")
+    )
+    respx.get("https://dadosabertos.alepe.pe.gov.br/api/v1/proposicoes/requerimentos/").mock(
+        return_value=Response(404, text="")
+    )
+    r = client.get("/propositions/fetch-live/al_pe/16370")
+    assert r.status_code == 200
+    item = r.json()["data"][0]
+    assert item["id_proposicao_origem"] == "16370"
+    assert item["sigla_tipo"] == "PEC"
+    assert item["numero"] == "33"
+    assert item["ano"] == 2026
+    assert item["autores"][0]["nome"] == "Joao Paulo do PT"
+    assert item["dados_adicionais"]["objetivo"] == "VIGESIMA"
+
+
+@respx.mock
+def test_detalhe_al_pe_docid_inexistente_404(client: TestClient):
+    """Docid não existe em nenhum dos 3 endpoints → 404 estruturado."""
+    for ep in ["projetos", "indicacoes", "requerimentos"]:
+        respx.get(f"https://dadosabertos.alepe.pe.gov.br/api/v1/proposicoes/{ep}/").mock(
+            return_value=Response(200, content=b'<?xml version="1.0"?><projetos></projetos>',
+                                  headers={"Content-Type": "application/xml"})
+        )
+    r = client.get("/propositions/fetch-live/al_pe/99999")
+    assert r.status_code == 404
+
+
 @respx.mock
 def test_detalhe_al_ap_404_propaga_503(client: TestClient):
     """Se a proposição não existe, fonte upstream 404 → API responde 503."""

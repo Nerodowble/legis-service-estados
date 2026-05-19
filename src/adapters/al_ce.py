@@ -203,6 +203,42 @@ class AdapterCE(AdapterBase):
             totals_by_nivel=TotalsByNivel(estadual=len(pagina)),
         )
 
+    async def detalhe(self, id_proposicao: str) -> ResponseEnvelope:
+        """
+        Detalhe ALECE: o id_proposicao é o slug "PL-{numero}-{ano}" gerado
+        pelo adapter. Como o PHP legado não tem endpoint per-item, busca
+        na listagem completa (uma página por vez se necessário) e filtra
+        pelo (numero, ano).
+        """
+        from src.errors import ProposicaoNaoEncontradaError
+
+        m = re.match(r"PL-(\d+)-(\d{4})", id_proposicao)
+        if not m:
+            raise ProposicaoNaoEncontradaError("CE", id_proposicao)
+        numero_alvo = m.group(1)
+        ano_alvo = int(m.group(2))
+
+        # Busca por pages da listagem (até 5 páginas — economia de fetch)
+        for page in range(1, 6):
+            try:
+                envelope = await self.listar(
+                    FiltrosBusca(page=page, per_page=20, ano=ano_alvo, numero=numero_alvo)
+                )
+            except Exception:
+                continue
+            for item in envelope.data:
+                if item.numero == numero_alvo and item.ano == ano_alvo:
+                    return ResponseEnvelope(
+                        data=[item],
+                        total=1,
+                        total_pages=1,
+                        totals_by_nivel=TotalsByNivel(estadual=1),
+                    )
+            if not envelope.data:
+                break
+
+        raise ProposicaoNaoEncontradaError("CE", id_proposicao)
+
     def _converter_data(self, br: str) -> str | None:
         # CE usa formato 02.02.23 (DD.MM.YY)
         m = re.match(r"(\d{2})\.(\d{2})\.(\d{2,4})", br or "")

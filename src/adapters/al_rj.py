@@ -135,6 +135,114 @@ class AdapterRJ(AdapterBase):
             totals_by_nivel=TotalsByNivel(estadual=len(items)),
         )
 
+    async def detalhe(self, id_proposicao: str) -> ResponseEnvelope:
+        """
+        Detalhe via URL canônica Lotus Notes:
+          http://alerjln1.alerj.rj.gov.br/{base}.nsf/{UNID}?OpenDocument
+
+        UNID é o ID nativo do documento Lotus (hex de 32 chars).
+        Tenta as bases scpro2327 (legislatura corrente) e scpro (histórico).
+        """
+        from src.errors import ProposicaoNaoEncontradaError
+
+        bases = ["scpro2327", "scpro", "contlei"]
+        async with httpx.AsyncClient(
+            timeout=settings.HTTP_TIMEOUT_SECONDS,
+            headers={"User-Agent": settings.USER_AGENT},
+            follow_redirects=True,
+        ) as client:
+            for base in bases:
+                url = f"{BASE_URL}/{base}.nsf/{id_proposicao}?OpenDocument"
+                try:
+                    response = await client.get(url)
+                    if response.status_code == 404:
+                        continue
+                    response.raise_for_status()
+                except (httpx.HTTPStatusError, httpx.TimeoutException,
+                        httpx.ConnectError, httpx.RemoteProtocolError,
+                        httpx.ReadError, httpx.WriteError):
+                    continue
+
+                html = response.text
+                return self._parsear_detalhe_lotus(html, id_proposicao, url, base)
+
+        raise ProposicaoNaoEncontradaError("RJ", id_proposicao)
+
+    def _parsear_detalhe_lotus(
+        self, html: str, unid: str, url: str, base: str
+    ) -> ResponseEnvelope:
+        """
+        Lotus Domino devolve um HTML com layout legado (tables + font).
+        Parser defensivo: tenta extrair rótulos "Label: Valor" no texto.
+        """
+        from src.parsers import normalizar_texto, parse_html
+
+        tree = parse_html(html)
+        texto = re.sub(r"\s+", " ", tree.text(strip=True) if tree else html)
+
+        def _campo(rotulo: str) -> str | None:
+            m = re.search(
+                rf"{rotulo}\s*[:\s]+([^|]+?)(?=\s+(?:Autor|Ementa|Tipo|N[º°]?\s+Proj|Data|Situa|Apresenta|$))",
+                texto,
+                re.IGNORECASE,
+            )
+            return normalizar_texto(m.group(1)) if m else None
+
+        ementa = _campo("Ementa")
+        autor = _campo("Autor") or _campo("Autoria")
+        situacao = _campo("Situação") or _campo("Status")
+        data = _campo("Data de Apresentação") or _campo("Apresentado em")
+        tipo_num = _campo("N° do Projeto") or _campo("Nº")
+
+        sigla, numero, ano = "PL", None, None
+        if tipo_num:
+            m_sig = re.match(r"([A-Z]+)\s*", tipo_num)
+            if m_sig:
+                sigla = m_sig.group(1)
+            num, ano = self._parsear_numero_lotus(tipo_num)
+            numero = num
+
+        item = ProposicaoNormalizadaRaw(
+            id_proposicao_origem=unid,
+            casa_origem=self.NOME_CASA,
+            sigla_tipo=sigla,
+            numero=numero,
+            ano=ano,
+            ementa=ementa,
+            data_apresentacao=self._converter_data_br_lotus(data),
+            status=situacao,
+            url_inteiro_teor=url,
+            autores=[Autor(nome=autor, uf="RJ", tipo="Deputado")] if autor else [],
+            tramitacoes=[],
+            dados_adicionais=DadosAdicionais(
+                codigoMateria=unid,
+                objetivo=f"Base Lotus: {base}",
+                casaIdentificadora="ALERJ",
+                enteIdentificador="RJ",
+                tipoConteudo="Proposição",
+                tipoDocumento=sigla,
+            ),
+            monitor=False,
+            nivel_federativo="estadual",
+        )
+
+        return ResponseEnvelope(
+            data=[item],
+            total=1,
+            total_pages=1,
+            totals_by_nivel=TotalsByNivel(estadual=1),
+        )
+
+    def _converter_data_br_lotus(self, s: str | None) -> str | None:
+        if not s:
+            return None
+        # Lotus às vezes manda "15/03/2024", às vezes ISO
+        m = re.match(r"(\d{2})/(\d{2})/(\d{4})", s)
+        if m:
+            return f"{m.group(3)}-{m.group(2)}-{m.group(1)}"
+        m = re.match(r"(\d{4})-(\d{2})-(\d{2})", s)
+        return m.group(0) if m else None
+
     def _parsear_numero_lotus(self, s: str) -> tuple[str | None, int | None]:
         import re
 

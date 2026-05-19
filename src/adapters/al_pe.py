@@ -135,6 +135,91 @@ class AdapterPE(AdapterBase):
             totals_by_nivel=TotalsByNivel(estadual=len(pagina)),
         )
 
+    async def detalhe(self, id_proposicao: str) -> ResponseEnvelope:
+        """
+        ALEPE não tem endpoint single-item — o XML público devolve a lista
+        completa por endpoint (projetos/indicacoes/requerimentos). Detalhe:
+        baixa os 3 endpoints, filtra pelo docid solicitado, devolve o item.
+
+        Custo: 3 fetches XML (cada um cobre 1 categoria do ano corrente),
+        mas operação one-shot por request. Sem cache (stateless).
+        """
+        from src.errors import ProposicaoNaoEncontradaError
+
+        endpoints = ["projetos", "indicacoes", "requerimentos"]
+        async with httpx.AsyncClient(
+            timeout=settings.HTTP_TIMEOUT_SECONDS,
+            headers={
+                "User-Agent": settings.USER_AGENT,
+                "Accept": "application/xml, text/xml",
+            },
+            follow_redirects=True,
+        ) as client:
+            for endpoint in endpoints:
+                try:
+                    response = await client.get(
+                        f"{BASE_URL}/api/v1/proposicoes/{endpoint}/"
+                    )
+                    response.raise_for_status()
+                    root = parse_xml(response.content)
+                except (httpx.HTTPStatusError, httpx.TimeoutException,
+                        httpx.ConnectError, httpx.RemoteProtocolError,
+                        httpx.ReadError, httpx.WriteError):
+                    continue
+                except Exception:
+                    continue
+
+                # Procurar por docid (cobre projeto/indicacao/requerimento)
+                for tag in ("projeto", "indicacao", "requerimento"):
+                    for prop in root.findall(tag):
+                        if prop.attrib.get("docid") == str(id_proposicao):
+                            return self._envelope_de_um(prop)
+
+        raise ProposicaoNaoEncontradaError("PE", id_proposicao)
+
+    def _envelope_de_um(self, prop) -> ResponseEnvelope:
+        """Constroi ResponseEnvelope com 1 item a partir do elemento XML."""
+        attrs = prop.attrib
+        id_origem = attrs.get("docid") or ""
+        sigla_real = self._mapear_sigla(attrs.get("tipo"), "PL")
+
+        autores = []
+        for autor_el in prop.findall(".//autor"):
+            nome = autor_el.attrib.get("nome")
+            tipo_autor = autor_el.attrib.get("tipo", "Deputado").title()
+            if nome:
+                autores.append(Autor(nome=nome, uf="PE", tipo=tipo_autor))
+
+        item = ProposicaoNormalizadaRaw(
+            id_proposicao_origem=str(id_origem),
+            casa_origem=self.NOME_CASA,
+            sigla_tipo=sigla_real,
+            numero=attrs.get("numero"),
+            ano=int(attrs["ano"]) if attrs.get("ano", "").isdigit() else None,
+            ementa=attrs.get("ementa"),
+            data_apresentacao=self._converter_data_br(attrs.get("dataPublicacao")),
+            url_inteiro_teor=f"https://www.alepe.pe.gov.br/proposicao/?docid={id_origem}",
+            autores=autores,
+            tramitacoes=[],
+            dados_adicionais=DadosAdicionais(
+                codigoMateria=id_origem,
+                objetivo=attrs.get("legislatura"),
+                casaIdentificadora="ALEPE",
+                enteIdentificador="PE",
+                tipoConteudo="Proposição",
+                tipoDocumento=sigla_real,
+            ),
+            monitor=False,
+            nivel_federativo="estadual",
+        )
+
+        return ResponseEnvelope(
+            data=[item],
+            total=1,
+            total_pages=1,
+            totals_by_nivel=TotalsByNivel(estadual=1),
+        )
+
     def _mapear_sigla(self, tipo: str | None, default: str) -> str:
         if not tipo:
             return default

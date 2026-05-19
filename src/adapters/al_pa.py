@@ -175,6 +175,142 @@ class AdapterPA(AdapterBase):
             totals_by_nivel=TotalsByNivel(estadual=min(len(items), filtros.per_page)),
         )
 
+    async def detalhe(self, id_proposicao: str) -> ResponseEnvelope:
+        """
+        Detalhe via /Legislativo/DetalhesProposicao?IdProposicao=N
+
+        Estrutura validada ao vivo:
+          <p>Tipo de Proposição: INDICAÇÃO</p>
+          <p>Número: 142</p>
+          <p>Origem: INTERNA</p>
+          <p>Entrada: MESA DIRETORA</p>
+          <p>Data da Entrada: 18/12/2024</p>
+          <p>Autor: DEP. LÍVIA DUARTE</p>
+          <p>Ementa: Requer ao Excelentíssimo...</p>
+          <p>Regime: MATÉRIA EM REGIME NORMAL</p>
+          <p>Situação: DEFERIDA</p>
+
+        Anexos (quando presentes):
+          <a href="https://downloads.alepa.pa.gov.br/Projeto/Anexo/14341-1.PDF">Download</a>
+        """
+        url = f"{BASE_URL}/Legislativo/DetalhesProposicao?IdProposicao={id_proposicao}"
+
+        async with httpx.AsyncClient(
+            timeout=settings.HTTP_TIMEOUT_SECONDS,
+            headers={
+                "User-Agent": settings.USER_AGENT,
+                "Referer": f"{BASE_URL}/Legislativo/CardViewProposicoes",
+            },
+            follow_redirects=True,
+        ) as client:
+            try:
+                response = await client.get(url)
+                response.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                raise ALIndisponivelError("PA", e.response.status_code, str(e)) from e
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError) as e:
+                raise ALIndisponivelError("PA", None, str(e)) from e
+
+            html = decode_response(response)
+
+        return self._parsear_detalhe(html, id_proposicao, url)
+
+    def _parsear_detalhe(self, html: str, id_origem: str, url: str) -> ResponseEnvelope:
+        tree = parse_html(html)
+
+        # Campos vêm como <p>Label: Valor</p> dentro de .items-container
+        campos: dict[str, str] = {}
+        for p in tree.css(".items-container p, p"):
+            txt = (p.text(strip=True) or "").strip()
+            m = re.match(r"^([^:]+):\s*(.+)$", txt)
+            if m:
+                label = m.group(1).strip().lower()
+                valor = normalizar_texto(m.group(2)) or ""
+                if valor and label not in campos:
+                    campos[label] = valor
+
+        tipo_raw = campos.get("tipo de proposição") or campos.get("tipo")
+        numero = campos.get("número") or campos.get("numero")
+        autor_nome = campos.get("autor")
+        ementa = campos.get("ementa")
+        data_br = campos.get("data da entrada") or campos.get("entrada")
+        situacao = campos.get("situação") or campos.get("situacao")
+        regime = campos.get("regime")
+        origem = campos.get("origem")
+
+        sigla = self._mapear_sigla_detalhe(tipo_raw or "")
+        # Title costuma ter "INDICAÇÃO Nº 142/2024" — extrair ano dali
+        ano: int | None = None
+        title = tree.css_first("title")
+        if title:
+            t = title.text() or ""
+            m_ano = re.search(r"/\s*(\d{4})", t)
+            if m_ano:
+                ano = int(m_ano.group(1))
+
+        # Coletar anexos como URLs canônicas (1ª é a "url_inteiro_teor")
+        url_pdf: str | None = None
+        for a in tree.css('a[href*="/Anexo/"], a[href$=".PDF"], a[href$=".pdf"]'):
+            href = a.attributes.get("href") or ""
+            if href.lower().endswith(".pdf"):
+                url_pdf = href if href.startswith("http") else f"{BASE_URL}{href}"
+                break
+
+        item = ProposicaoNormalizadaRaw(
+            id_proposicao_origem=str(id_origem),
+            casa_origem=self.NOME_CASA,
+            sigla_tipo=sigla,
+            numero=numero,
+            ano=ano,
+            ementa=ementa,
+            data_apresentacao=self._converter_data_br(data_br),
+            status=situacao,
+            url_inteiro_teor=url_pdf or url,
+            autores=[Autor(nome=autor_nome, uf="PA", tipo="Deputado")] if autor_nome else [],
+            tramitacoes=[],
+            dados_adicionais=DadosAdicionais(
+                codigoMateria=id_origem,
+                objetivo=origem,
+                casaIdentificadora="ALEPA",
+                enteIdentificador="PA",
+                tipoConteudo="Proposição",
+                tipoDocumento=sigla,
+            ),
+            monitor=False,
+            nivel_federativo="estadual",
+        )
+
+        # `regime` vai em ementa_detalhada se preenchido (ALEPA expõe esse contexto)
+        if regime:
+            item.ementa_detalhada = f"Regime: {regime}"
+
+        return ResponseEnvelope(
+            data=[item],
+            total=1,
+            total_pages=1,
+            totals_by_nivel=TotalsByNivel(estadual=1),
+        )
+
+    def _mapear_sigla_detalhe(self, tipo: str) -> str:
+        t = (tipo or "").upper().strip()
+        if "COMPLEMENTAR" in t:
+            return "PLC"
+        if "DECRETO LEGISLATIVO" in t:
+            return "PDL"
+        if "EMENDA" in t or t == "PEC":
+            return "PEC"
+        if "INDICA" in t:
+            return "IND"
+        if "REQUERIMENTO" in t:
+            return "REQ"
+        if "RESOLU" in t:
+            return "PR"
+        if "MO" in t and "ÇÃO" in t:
+            return "MOC"
+        if "LEI" in t:
+            return "PL"
+        return "PL"
+
     def _extrair_total(self, tree) -> int | None:
         # "Página 1 de 244 (2433 itens)" no rodapé/cabeçalho
         for el in tree.css(".dxp-summary, .dxcvTitlePanel_Office365 p, p"):
