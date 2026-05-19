@@ -24,6 +24,7 @@ from src.adapters.base import AdapterBase, FiltrosBusca
 from src.adapters.filtros import filtrar_local
 from src.config import settings
 from src.errors import ALIndisponivelError
+from src.orquestrador.cache_parlamentares import CacheParlamentares
 from src.parsers import normalizar_texto, parse_html
 from src.parsers.encoding import decode_response
 from src.schemas import (
@@ -43,7 +44,64 @@ class AdapterBA(AdapterBase):
     SOURCE_ID = "al_ba"
     HOST_PRINCIPAL = BASE_URL
 
+    # Cache compartilhado de parlamentares (singleton + TTL 6h)
+    _cache = CacheParlamentares("al_ba")
+
+    async def _fetch_parlamentares(self) -> dict[str, dict[str, str]]:
+        """
+        Faz 1 fetch de /deputados/deputados-estaduais e parseia 63 cards.
+        Estrutura: <a class="deputado-nome">Adolfo Menezes</a> + sigla partido
+        adjacente no DOM (texto concatenado: "Adolfo MenezesPSD").
+        """
+        url = f"{BASE_URL}/deputados/deputados-estaduais"
+        try:
+            async with httpx.AsyncClient(
+                timeout=settings.HTTP_TIMEOUT_SECONDS,
+                headers={"User-Agent": settings.USER_AGENT},
+                follow_redirects=True,
+            ) as client:
+                r = await client.get(url)
+                r.raise_for_status()
+                html = decode_response(r)
+        except Exception:
+            return {}
+
+        tree = parse_html(html)
+        cache: dict[str, dict[str, str]] = {}
+
+        # Cada deputado tem <a class="deputado-nome">NOME</a>. Procurar o
+        # texto do container pai (geralmente "NOMEPARTIDO" colado).
+        siglas_validas = {
+            "PT", "PP", "PSD", "PL", "PDT", "PV", "PSB", "PSDB", "MDB",
+            "PSOL", "REDE", "REPUBLICANOS", "PODE", "PODEMOS", "AVANTE",
+            "NOVO", "PATRIOTA", "PROS", "PSC", "PCDOB", "CIDADANIA",
+            "SOLIDARIEDADE", "UNIÃO", "UNIAO", "UB",
+        }
+        for el in tree.css(".deputado-nome"):
+            nome = (el.text(strip=True) or "").strip()
+            if not nome:
+                continue
+            # Pai costuma ter "NOMEPARTIDO" colado
+            pai = el.parent
+            if not pai:
+                continue
+            t_pai = (pai.text(strip=True) or "").strip()
+            # Remover o nome do início para isolar o resto
+            resto = t_pai[len(nome):].strip()
+            # Match a primeira sigla válida que aparece
+            partido = None
+            for sigla in sorted(siglas_validas, key=lambda s: -len(s)):
+                if resto.upper().startswith(sigla):
+                    partido = sigla
+                    break
+            if partido:
+                cache[nome] = {"partido": partido}
+        return cache
+
     async def listar(self, filtros: FiltrosBusca) -> ResponseEnvelope:
+        # Warm-up do cache de parlamentares (silencioso se falhar)
+        await self._cache.warm(self._fetch_parlamentares)
+
         params: dict[str, str] = {}
         if filtros.data_inicio:
             params["dataInicio"] = self._iso_para_br(filtros.data_inicio)
@@ -185,7 +243,14 @@ class AdapterBA(AdapterBase):
         regime = self._extrair_campo(tree, "Regime")
         ementa = self._extrair_campo(tree, "Ementa")
 
-        autores = [Autor(nome=autor, uf="BA", tipo="Deputado")] if autor else []
+        autores = [
+            Autor(
+                nome=autor,
+                uf="BA",
+                tipo="Deputado",
+                partido=self._cache.partido_de(autor),
+            )
+        ] if autor else []
 
         return ProposicaoNormalizadaRaw(
             id_proposicao_origem=slug,

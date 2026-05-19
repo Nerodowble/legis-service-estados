@@ -27,6 +27,7 @@ from src.adapters.base import AdapterBase, FiltrosBusca
 from src.adapters.filtros import filtrar_local
 from src.config import settings
 from src.errors import ALIndisponivelError
+from src.orquestrador.cache_parlamentares import CacheParlamentares
 from src.parsers import normalizar_texto, parse_html
 from src.parsers.encoding import decode_response
 from src.schemas import (
@@ -51,17 +52,12 @@ class AdapterAP(AdapterBase):
     SOURCE_ID = "al_ap"
     HOST_PRINCIPAL = BASE_URL
 
-    # Cache do mapping {nome_normalizado: (id_dep, partido)} construído sob
-    # demanda no primeiro fetch que precise enriquecer autor. Singleton
-    # dentro do processo (adapter é singleton); zero persistência em disco.
-    # Expira após CACHE_TTL_SECONDS para refletir mudanças de partido/mandato.
-    _cache_parlamentares: dict[str, tuple[str, str]] | None = None
-    _cache_parlamentares_ts: float = 0.0
-    CACHE_TTL_SECONDS: float = 6 * 3600  # 6 horas (mandato de deputado raramente muda)
+    # Cache compartilhado de parlamentares (singleton + TTL 6h)
+    _cache = CacheParlamentares("al_ap")
 
     async def listar(self, filtros: FiltrosBusca) -> ResponseEnvelope:
         # Warm-up do cache de parlamentares (silencioso se falhar)
-        await self._construir_cache_parlamentares()
+        await self._cache.warm(self._fetch_parlamentares)
 
         params: dict[str, str] = {}
         if filtros.ano:
@@ -161,7 +157,7 @@ class AdapterAP(AdapterBase):
         ID é o sequencial 1..~120000 que aparece nos hrefs da listagem.
         """
         # Warm-up do cache de parlamentares (silencioso se falhar)
-        await self._construir_cache_parlamentares()
+        await self._cache.warm(self._fetch_parlamentares)
 
         url = f"{BASE_URL}/portal/proposicao/{id_proposicao}"
 
@@ -292,28 +288,19 @@ class AdapterAP(AdapterBase):
             totals_by_nivel=TotalsByNivel(estadual=1),
         )
 
-    async def _construir_cache_parlamentares(self) -> None:
+    async def _fetch_parlamentares(self) -> dict[str, dict[str, str]]:
         """
-        Constrói mapping {nome_normalizado: (iddeputado, partido)} via 1 fetch:
+        Faz 1 fetch da página de parlamentares e parseia 24 cards.
 
-        A página /pagina.php?pg=exibir_legislatura tem 24 cards, e CADA
-        <a iddeputado=N> tem um atributo `onmouseover="Tip('<b>Dep.</b> Aldilene
-        Souza<br><b>Nome Completo:</b> ALDILENE MATOS DE SOUZA<br><b>Partido:</b>
-        PDT<br><b>Profissão:</b> Administradora', ...)"`.
-        Parseamos esse tooltip para extrair Partido + Profissão por deputado.
+        Cada <a iddeputado=N> tem um atributo onmouseover com tooltip:
+          Tip('<b>Dep.</b> Aldilene Souza<br>
+               <b>Nome Completo:</b> ALDILENE MATOS DE SOUZA<br>
+               <b>Partido:</b> PDT<br>
+               <b>Profissão:</b> Administradora', ...)
 
-        Cache TTL controlado: rebuilds após CACHE_TTL_SECONDS para refletir
-        mudanças de mandato/filiação partidária. Falhas silenciosas.
+        Retorna mapping {nome → {partido, id}} consumido pelo
+        CacheParlamentares (que aplica normalização + TTL automático).
         """
-        import time
-
-        agora = time.time()
-        idade = agora - AdapterAP._cache_parlamentares_ts
-        cache_ok = AdapterAP._cache_parlamentares is not None
-        cache_fresco = idade < AdapterAP.CACHE_TTL_SECONDS
-
-        if cache_ok and cache_fresco:
-            return
         try:
             async with httpx.AsyncClient(
                 timeout=settings.HTTP_TIMEOUT_SECONDS,
@@ -324,12 +311,10 @@ class AdapterAP(AdapterBase):
                 response.raise_for_status()
                 html_lista = decode_response(response)
         except Exception:
-            AdapterAP._cache_parlamentares = {}
-            AdapterAP._cache_parlamentares_ts = agora  # marca tentativa para não martelar
-            return
+            return {}
 
         tree = parse_html(html_lista)
-        cache: dict[str, tuple[str, str]] = {}
+        cache: dict[str, dict[str, str]] = {}
 
         for card in tree.css(".box-foto-deputados"):
             a = card.css_first('a[href*="iddeputado="]')
@@ -342,45 +327,23 @@ class AdapterAP(AdapterBase):
             iddep = m_id.group(1)
 
             onmouseover = a.attributes.get("onmouseover") or ""
-            # onmouseover="Tip('<b>Dep.</b> Aldilene Souza<br>
-            #                  <b>Nome Completo:</b> ALDILENE MATOS DE SOUZA<br>
-            #                  <b>Partido:</b> PDT<br>...', ...)"
             m_nome = re.search(r"<b>Dep\.</b>\s*([^<]+?)<br>", onmouseover)
             m_partido = re.search(r"<b>Partido:</b>\s*([^<]+?)<br>", onmouseover)
             if not m_nome:
                 continue
-            nome = self._normalizar_nome_dep(m_nome.group(1))
+            nome = m_nome.group(1).strip()
             partido = m_partido.group(1).strip() if m_partido else ""
             if nome:
-                cache[nome] = (iddep, partido)
+                cache[nome] = {"id": iddep, "partido": partido}
 
-        AdapterAP._cache_parlamentares = cache
-        AdapterAP._cache_parlamentares_ts = agora
-
-    def _normalizar_nome_dep(self, nome: str) -> str:
-        """Remove prefixos 'Deputado/Deputada/Dep.' e normaliza espaços."""
-        s = nome.strip()
-        s = re.sub(r"^Deputad[oa]\.?\s+", "", s, flags=re.IGNORECASE)
-        s = re.sub(r"^Dep\.\s*", "", s, flags=re.IGNORECASE)
-        s = re.sub(r"\s+", " ", s)
-        return s.strip()
+        return cache
 
     def _enriquecer_autor(self, nome_bruto: str) -> Autor:
-        """Constrói Autor com partido + id_autor_origem quando o cache permite."""
-        nome_limpo = self._normalizar_nome_dep(nome_bruto)
-        cache = AdapterAP._cache_parlamentares or {}
-        info = cache.get(nome_limpo)
-        if not info:
-            # tenta match case-insensitive
-            for k, v in cache.items():
-                if k.lower() == nome_limpo.lower():
-                    info = v
-                    break
-        id_dep, partido = info if info else ("", None)
+        """Constrói Autor com partido + id_autor_origem do cache compartilhado."""
         return Autor(
-            id_autor_origem=id_dep or None,
-            nome=nome_bruto,  # preserva o "Deputado X" para o consumidor
-            partido=partido or None,
+            id_autor_origem=self._cache.id_de(nome_bruto),
+            nome=nome_bruto,  # preserva "Deputado X" para o consumidor
+            partido=self._cache.partido_de(nome_bruto),
             uf="AP",
             tipo="Deputado",
         )

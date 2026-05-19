@@ -82,9 +82,13 @@ CAPACIDADES: dict[str, CapacidadeAL] = {
         ementa=OPCIONAL,
         url_inteiro_teor=OBRIGATORIO,
         autores=NAO_DISPONIVEL,  # listagem só dá slugs, não autor
+        autor_partido=OPCIONAL,  # quando o autor vem (no detalhe), enriquecemos
         data_apresentacao=NAO_DISPONIVEL,
         detalhe_implementado=True,
-        notas=["Listagem só extrai slugs canônicos; detalhe enriquece"],
+        notas=[
+            "Listagem só extrai slugs canônicos; detalhe enriquece",
+            "Cache de partidos: 63 deputados de /deputados/deputados-estaduais",
+        ],
     ),
     "al_ce": CapacidadeAL(
         source_id="al_ce",
