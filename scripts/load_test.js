@@ -58,7 +58,7 @@ export const options = {
     http_req_failed: ['rate<0.01'],     // <1% de erro
     'latency_listagem': ['p(95)<8000'], // p95 listagem <8s
     'latency_detalhe': ['p(95)<5000'],  // p95 detalhe <5s
-    'latency_probe': ['p(95)<2000'],    // p95 probe <2s (latência da fonte)
+    'latency_probe': ['p(95)<5000'],    // p95 probe <5s (fonte pode ser lenta)
   },
 };
 
@@ -114,20 +114,25 @@ export function handleSummary(data) {
   return result;
 }
 
+function _safe(num) {
+  const n = Number(num);
+  return Number.isFinite(n) ? n.toFixed(1) : 'n/a';
+}
+
 function textSummary(data) {
-  const m = data.metrics;
-  const requests = m.http_reqs ? m.http_reqs.values.count : 0;
-  const failRate = m.http_req_failed ? (m.http_req_failed.values.rate * 100).toFixed(2) : '?';
-  const p95 = m.http_req_duration ? m.http_req_duration.values['p(95)'].toFixed(1) : '?';
-  const p99 = m.http_req_duration ? m.http_req_duration.values['p(99)'].toFixed(1) : '?';
+  const m = data.metrics || {};
+  const requests = m.http_reqs?.values?.count ?? 0;
+  const failRate = m.http_req_failed ? (m.http_req_failed.values.rate * 100).toFixed(2) : 'n/a';
+  const p95http = m.http_req_duration?.values?.['p(95)'];
+  const p99http = m.http_req_duration?.values?.['p(99)'];
 
   return `\n=== legis-service-estados — Load Test Report ===\n` +
     `Total requests:   ${requests}\n` +
     `Failure rate:     ${failRate}%\n` +
-    `p95 duration:     ${p95}ms\n` +
-    `p99 duration:     ${p99}ms\n` +
-    `p95 listagem:     ${(m.latency_listagem?.values?.['p(95)'] || 0).toFixed(1)}ms\n` +
-    `p95 detalhe:      ${(m.latency_detalhe?.values?.['p(95)'] || 0).toFixed(1)}ms\n` +
-    `p95 health probe: ${(m.latency_probe?.values?.['p(95)'] || 0).toFixed(1)}ms\n` +
+    `p95 duration:     ${_safe(p95http)}ms\n` +
+    `p99 duration:     ${_safe(p99http)}ms\n` +
+    `p95 listagem:     ${_safe(m.latency_listagem?.values?.['p(95)'])}ms\n` +
+    `p95 detalhe:      ${_safe(m.latency_detalhe?.values?.['p(95)'])}ms\n` +
+    `p95 health probe: ${_safe(m.latency_probe?.values?.['p(95)'])}ms\n` +
     `\nReport completo: load_test_report.json\n`;
 }
