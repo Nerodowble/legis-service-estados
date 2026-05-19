@@ -40,7 +40,54 @@ class AdapterPE(AdapterBase):
     SOURCE_ID = "al_pe"
     HOST_PRINCIPAL = BASE_URL
 
+    # Cache de parlamentares (singleton + TTL)
+    # ALEPE expõe /api/v1/parlamentares/ com JSON [{nomeParlamentar, partido}, ...]
+    _cache_partidos: dict[str, str] | None = None
+    _cache_partidos_ts: float = 0.0
+    CACHE_TTL_SECONDS: float = 6 * 3600
+
+    async def _construir_cache_partidos(self) -> None:
+        """Fetch one-shot do endpoint /api/v1/parlamentares/ com TTL 6h."""
+        import time
+
+        agora = time.time()
+        if (
+            AdapterPE._cache_partidos is not None
+            and (agora - AdapterPE._cache_partidos_ts) < AdapterPE.CACHE_TTL_SECONDS
+        ):
+            return
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=settings.HTTP_TIMEOUT_SECONDS,
+                headers={"User-Agent": settings.USER_AGENT, "Accept": "application/json"},
+                follow_redirects=True,
+            ) as client:
+                response = await client.get(f"{BASE_URL}/api/v1/parlamentares/")
+                response.raise_for_status()
+                data = response.json()
+        except Exception:
+            AdapterPE._cache_partidos = {}
+            AdapterPE._cache_partidos_ts = agora
+            return
+
+        cache: dict[str, str] = {}
+        for parlamentar in data:
+            nome = (parlamentar.get("nomeParlamentar") or "").strip()
+            partido = (parlamentar.get("partido") or "").strip()
+            if nome and partido:
+                cache[nome.lower()] = partido
+        AdapterPE._cache_partidos = cache
+        AdapterPE._cache_partidos_ts = agora
+
+    def _partido_de(self, nome: str | None) -> str | None:
+        """Lookup case-insensitive no cache."""
+        if not nome or not AdapterPE._cache_partidos:
+            return None
+        return AdapterPE._cache_partidos.get(nome.lower().strip())
+
     async def listar(self, filtros: FiltrosBusca) -> ResponseEnvelope:
+        await self._construir_cache_partidos()
         endpoint = TIPO_PARA_ENDPOINT.get((filtros.tipo or "PL").upper(), "projetos")
         sigla = (filtros.tipo or "PL").upper()
         params: dict[str, str] = {}
@@ -93,7 +140,7 @@ class AdapterPE(AdapterBase):
                 nome = autor_el.attrib.get("nome")
                 tipo_autor = autor_el.attrib.get("tipo", "Deputado").title()
                 if nome:
-                    autores.append(Autor(nome=nome, uf="PE", tipo=tipo_autor))
+                    autores.append(Autor(nome=nome, uf="PE", tipo=tipo_autor, partido=self._partido_de(nome)))
 
             items.append(
                 ProposicaoNormalizadaRaw(
@@ -146,6 +193,9 @@ class AdapterPE(AdapterBase):
         """
         from src.errors import ProposicaoNaoEncontradaError
 
+        # Garantir cache de partidos antes de enriquecer autor
+        await self._construir_cache_partidos()
+
         endpoints = ["projetos", "indicacoes", "requerimentos"]
         async with httpx.AsyncClient(
             timeout=settings.HTTP_TIMEOUT_SECONDS,
@@ -188,7 +238,7 @@ class AdapterPE(AdapterBase):
             nome = autor_el.attrib.get("nome")
             tipo_autor = autor_el.attrib.get("tipo", "Deputado").title()
             if nome:
-                autores.append(Autor(nome=nome, uf="PE", tipo=tipo_autor))
+                autores.append(Autor(nome=nome, uf="PE", tipo=tipo_autor, partido=self._partido_de(nome)))
 
         item = ProposicaoNormalizadaRaw(
             id_proposicao_origem=str(id_origem),

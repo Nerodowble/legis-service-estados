@@ -29,6 +29,7 @@ from src.errors import (
     ProposicaoNaoEncontradaError,
 )
 from src.observability.logger import logger
+from src.observability.prometheus_metrics import medir_upstream
 from src.orquestrador.circuit_breaker import breakers, call_async_safe
 from src.orquestrador.rate_limiter import rate_limiters
 from src.orquestrador.registry import get_adapter, listar_sources_disponiveis
@@ -96,16 +97,18 @@ async def fetch_detalhe(source: SourceLiteral, id_proposicao: str) -> ResponseEn
     breaker = breakers.get(source)
 
     async with limiter:
-        try:
-            envelope = await call_async_safe(breaker, adapter.detalhe, id_proposicao)
-        except ProposicaoNaoEncontradaError:
-            raise HTTPException(404, f"Proposição {id_proposicao} não encontrada em {source}") from None
-        except ALBloqueadaError as e:
-            raise HTTPException(451, {"uf": e.uf, "motivo_legal": e.motivo_legal}) from e
-        except ALIndisponivelError as e:
-            raise HTTPException(503, {"uf": e.uf, "status": e.status, "motivo": e.motivo}) from e
-        except ParserFalhouError as e:
-            raise HTTPException(502, {"uf": e.uf, "detalhe": e.detalhe}) from e
+        with medir_upstream(source, "detalhe") as ctx:
+            try:
+                envelope = await call_async_safe(breaker, adapter.detalhe, id_proposicao)
+                ctx.items = len(envelope.data)
+            except ProposicaoNaoEncontradaError:
+                raise HTTPException(404, f"Proposição {id_proposicao} não encontrada em {source}") from None
+            except ALBloqueadaError as e:
+                raise HTTPException(451, {"uf": e.uf, "motivo_legal": e.motivo_legal}) from e
+            except ALIndisponivelError as e:
+                raise HTTPException(503, {"uf": e.uf, "status": e.status, "motivo": e.motivo}) from e
+            except ParserFalhouError as e:
+                raise HTTPException(502, {"uf": e.uf, "detalhe": e.detalhe}) from e
 
     return envelope
 
@@ -120,19 +123,21 @@ async def _fetch_single(source: str, filtros: FiltrosBusca) -> ResponseEnvelope:
     breaker = breakers.get(source)
 
     async with limiter:
-        try:
-            envelope = await call_async_safe(breaker, adapter.listar, filtros)
-        except ALBloqueadaError as e:
-            raise HTTPException(451, {"uf": e.uf, "motivo_legal": e.motivo_legal}) from e
-        except ALIndisponivelError as e:
-            logger.warning("al_indisponivel", source=source, status=e.status, motivo=e.motivo)
-            raise HTTPException(503, {"uf": e.uf, "status": e.status, "motivo": e.motivo}) from e
-        except ParserFalhouError as e:
-            logger.error("parser_falhou", source=source, detalhe=e.detalhe)
-            raise HTTPException(502, {"uf": e.uf, "detalhe": e.detalhe}) from e
-        except Exception as e:
-            logger.exception("erro_inesperado", source=source, erro=str(e))
-            raise HTTPException(500, "Erro inesperado no adapter") from e
+        with medir_upstream(source, "listar") as ctx:
+            try:
+                envelope = await call_async_safe(breaker, adapter.listar, filtros)
+                ctx.items = len(envelope.data)
+            except ALBloqueadaError as e:
+                raise HTTPException(451, {"uf": e.uf, "motivo_legal": e.motivo_legal}) from e
+            except ALIndisponivelError as e:
+                logger.warning("al_indisponivel", source=source, status=e.status, motivo=e.motivo)
+                raise HTTPException(503, {"uf": e.uf, "status": e.status, "motivo": e.motivo}) from e
+            except ParserFalhouError as e:
+                logger.error("parser_falhou", source=source, detalhe=e.detalhe)
+                raise HTTPException(502, {"uf": e.uf, "detalhe": e.detalhe}) from e
+            except Exception as e:
+                logger.exception("erro_inesperado", source=source, erro=str(e))
+                raise HTTPException(500, "Erro inesperado no adapter") from e
 
     return envelope
 
