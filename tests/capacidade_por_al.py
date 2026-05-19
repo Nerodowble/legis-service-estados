@@ -136,16 +136,20 @@ CAPACIDADES: dict[str, CapacidadeAL] = {
         uf="MT",
         casa_identificadora="ALMT",
         id_proposicao_origem=OBRIGATORIO,
-        sigla_tipo=OPCIONAL,  # só no detalhe (HermesLegis <title>)
-        numero=OPCIONAL,
-        ano=OPCIONAL,
-        ementa=NAO_DISPONIVEL,  # só HTML pesado da página de detalhe tem
-        data_apresentacao=NAO_DISPONIVEL,
+        sigla_tipo=OBRIGATORIO,   # extraído do .text-muted da listagem
+        numero=OBRIGATORIO,
+        ano=OBRIGATORIO,
+        ementa=OBRIGATORIO,       # extraído do <h3 class="fs-16">
+        data_apresentacao=NAO_DISPONIVEL,  # só no detalhe
         url_inteiro_teor=OBRIGATORIO,
-        autores=OPCIONAL,  # extraído do <title> via regex
+        autores=OBRIGATORIO,      # extraído do "AUTOR(ES): ..." do <h3>
         status=OPCIONAL,
         detalhe_implementado=True,
-        notas=["HermesLegis Symfony; listagem só dá IDs; detalhe parseia <title>"],
+        notas=[
+            "HermesLegis Symfony",
+            "Listagem RICA: <h3 class='fs-16'> tem ementa+autores; <div class='text-muted'> tem tipo+num+ano",
+            "Padrão observado de autores no h3: 'AUTORES: DEPUTADO X E DEPUTADO Y'",
+        ],
     ),
     "al_pa": CapacidadeAL(
         source_id="al_pa",
@@ -180,18 +184,19 @@ CAPACIDADES: dict[str, CapacidadeAL] = {
         source_id="al_rj",
         uf="RJ",
         casa_identificadora="ALERJ",
-        sigla_tipo=OPCIONAL,
-        numero=OPCIONAL,
-        ano=OPCIONAL,
-        ementa=OPCIONAL,
-        data_apresentacao=OPCIONAL,
+        sigla_tipo=OBRIGATORIO,  # vem do parametro tipo do filtro (mapeado para view)
+        numero=OBRIGATORIO,      # entrydata columnnumber=0
+        ano=OBRIGATORIO,
+        ementa=OBRIGATORIO,      # entrydata columnnumber=2
+        data_apresentacao=OBRIGATORIO,  # entrydata columnnumber=3
         url_inteiro_teor=OBRIGATORIO,
-        autores=OPCIONAL,
-        status=OPCIONAL,
+        autores=OBRIGATORIO,     # entrydata columnnumber=1 (algumas views: 'origem')
+        status=OBRIGATORIO,      # entrydata columnnumber=4
         detalhe_implementado=True,
         notas=[
             "IBM Lotus Notes; XML com columnnumber",
-            "Detalhe: GET {base}.nsf/{UNID}?OpenDocument (tenta 3 bases: scpro2327, scpro, contlei)",
+            "Listagem RICA: entrydata por columnnumber (numero, autor, ementa, data, situacao)",
+            "Detalhe: GET {base}.nsf/{UNID}?OpenDocument (3 bases: scpro2327, scpro, contlei)",
         ],
     ),
     "al_sc": CapacidadeAL(

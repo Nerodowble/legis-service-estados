@@ -64,6 +64,20 @@ class AdapterPA(AdapterBase):
     HOST_PRINCIPAL = BASE_URL
 
     async def listar(self, filtros: FiltrosBusca) -> ResponseEnvelope:
+        """
+        ALEPA usa DevExpress ASPxClientCardView que pagina via callback JS
+        (não via query string). Investigação ao vivo (2026-05-19) confirmou:
+        ?page=N, ?absolutepage=N, etc são todos ignorados; sempre retorna
+        a primeira página.
+
+        Paginação além da página 1 exigiria replicar o postback DevExpress
+        completo (POST com __CALLBACKID + __CALLBACKPARAM + __CALLBACKSTATE),
+        que é instável (depende da versão exata do DevExpress).
+
+        Estratégia atual: devolve a primeira página (~10 items) com filtros
+        nativos (tipo, ano, numero). Para iterar dataset completo, usar
+        combinações de filtro (vários anos × tipos).
+        """
         sigla = (filtros.tipo or "PL").upper()
         tipo_id = SIGLA_PARA_TIPO_ID.get(sigla, 3)  # default: PL ordinário
 

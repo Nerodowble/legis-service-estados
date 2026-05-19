@@ -18,7 +18,6 @@ from httpx import Response
 
 from src.main import app
 
-
 XML_PE_5_ITENS = b"""<?xml version="1.0" encoding="UTF-8"?>
 <projetos>
   <projeto docid="1" numero="1" ano="2024" tipo="PROJETO DE LEI"
@@ -405,7 +404,7 @@ def test_page_2_nao_repete_items_de_page_1(client: TestClient):
     r1 = client.get("/propositions/fetch-live?source=al_pe&per_page=2&page=1")
     r2 = client.get("/propositions/fetch-live?source=al_pe&per_page=2&page=2")
     ids_p1 = {i["id_proposicao_origem"] for i in r1.json()["data"]}
-    ids_p2 = {i["id_proposicao_origem"] for i in r2.json()["data"]}
+    _ids_p2 = {i["id_proposicao_origem"] for i in r2.json()["data"]}
     # ATENÇÃO: como o adapter PE não recorta por página (devolve tudo),
     # este teste sobe um sintoma se a paginação client-side falhar.
     # Nesta versão, ambos podem retornar o mesmo conjunto — documentado.

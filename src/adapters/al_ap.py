@@ -229,7 +229,6 @@ class AdapterAP(AdapterBase):
         ementa = campos.get("ementa")
         data_protocolo = campos.get("data de protocolo") or campos.get("data de apresentação")
         observacoes = campos.get("observações") or campos.get("observacoes")
-        texto_original_raw = campos.get("texto original")
 
         # 3. URL canônica do PDF (quando "Texto Original" tem link)
         url_pdf: str | None = None

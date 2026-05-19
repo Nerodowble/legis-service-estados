@@ -17,8 +17,6 @@ Estes testes garantem que o helper:
 
 from __future__ import annotations
 
-import pytest
-
 from src.adapters.base import FiltrosBusca
 from src.adapters.filtros import filtrar_local
 from src.schemas import Autor, ProposicaoNormalizadaRaw

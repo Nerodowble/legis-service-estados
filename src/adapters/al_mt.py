@@ -139,30 +139,61 @@ class AdapterMT(AdapterBase):
     # ─────────────────────────────────────────────────────────
 
     def _parsear_listagem(self, html: str, filtros: FiltrosBusca) -> ResponseEnvelope:
+        """
+        Estrutura real do HermesLegis ALMT (validada ao vivo 2026-05-19):
+
+          <h3 class="fs-16">VETO PARCIAL APOSTO AO PROJETO DE LEI Nº 864/2023,
+            QUE DISPÕE SOBRE ... AUTORES: DEPUTADO DIEGO GUIMARÃES E
+            DEPUTADO EDUARDO BOTELHO</h3>
+          <div class="text-muted mb-2">
+            Veto n° 1/2026 Mensagem n° 170/2025 - Protocolo n° 871/2026
+          </div>
+          <div id="collapse-group-172857">
+            <turbo-frame src="/proposicao/172857/tramitacoes"></turbo-frame>
+            ...
+          </div>
+
+        O ID está no `collapse-group-N`. <h3> tem ementa completa + autores
+        nominais. <div class="text-muted"> tem tipo/número/ano de cada
+        peça (Veto, Mensagem, Protocolo, Processo).
+        """
         tree = parse_html(html)
-
-        # Cada proposição é um link para /proposicao/cpdoc/{ID}/visualizar
-        links = tree.css('a[href*="/proposicao/cpdoc/"]')
-        ids_unicos: list[str] = []
-        for link in links:
-            href = link.attributes.get("href") or ""
-            m = re.search(r"/proposicao/cpdoc/(\d+)/visualizar", href)
-            if m and m.group(1) not in ids_unicos:
-                ids_unicos.append(m.group(1))
-
-        # Para listagem, devolvemos info mínima extraída dos links/cards.
-        # Para detalhe completo, cliente faz GET individual em cada cpdoc/ID.
         items: list[ProposicaoNormalizadaRaw] = []
-        for cpdoc_id in ids_unicos:
-            # Cada card geralmente tem o title como texto do link
-            link_text = ""
-            for link in links:
-                href = link.attributes.get("href") or ""
-                if f"/proposicao/cpdoc/{cpdoc_id}/visualizar" in href:
-                    link_text = normalizar_texto(link.text(strip=True)) or ""
-                    break
+        vistos: set[str] = set()
 
-            sigla, numero, ano = self._extrair_tipo_numero_ano(link_text)
+        # Cada proposição vem num bloco com id="collapse-group-N"
+        for grupo in tree.css('div[id^="collapse-group-"]'):
+            grupo_id = grupo.attributes.get("id") or ""
+            m_id = re.search(r"collapse-group-(\d+)", grupo_id)
+            if not m_id:
+                continue
+            cpdoc_id = m_id.group(1)
+            if cpdoc_id in vistos:
+                continue
+            vistos.add(cpdoc_id)
+
+            # h3 e .text-muted estão como IRMÃOS do collapse-group (não dentro)
+            # Buscamos no container que envolve ambos
+            container = grupo.parent
+            if not container:
+                continue
+
+            h3 = container.css_first("h3.fs-16") or container.css_first("h3")
+            text_muted = container.css_first("div.text-muted")
+            ementa_raw = normalizar_texto(h3.text(strip=True)) if h3 else ""
+            meta_raw = normalizar_texto(text_muted.text(strip=True)) if text_muted else ""
+
+            # Extrair sigla+número+ano do .text-muted (primeira peça)
+            # Padrão: "Veto n° 1/2026 Mensagem n° 170/2025 - ..."
+            sigla, numero, ano = self._extrair_tipo_numero_ano(meta_raw or ementa_raw)
+
+            # Extrair autores do h3 (após "AUTOR:" ou "AUTORES:")
+            autores = self._extrair_autores_h3(ementa_raw)
+
+            # Limpar AUTORES: do texto da ementa
+            ementa_limpa = re.split(r"\s*AUTOR(?:ES)?:\s*", ementa_raw, maxsplit=1)[0].strip()
+            ementa = ementa_limpa or None
+
             items.append(
                 ProposicaoNormalizadaRaw(
                     id_proposicao_origem=cpdoc_id,
@@ -170,13 +201,15 @@ class AdapterMT(AdapterBase):
                     sigla_tipo=sigla,
                     numero=numero,
                     ano=ano,
-                    ementa=None,
+                    ementa=ementa,
+                    ementa_detalhada=meta_raw if meta_raw and meta_raw != ementa else None,
                     data_apresentacao=None,
                     status=None,
                     url_inteiro_teor=f"{BASE_URL}/proposicao/cpdoc/{cpdoc_id}/visualizar",
-                    autores=[],
+                    autores=autores,
                     tramitacoes=[],
                     dados_adicionais=DadosAdicionais(
+                        codigoMateria=cpdoc_id,
                         casaIdentificadora="ALMT",
                         enteIdentificador="MT",
                         tipoConteudo="Proposição",
@@ -188,12 +221,46 @@ class AdapterMT(AdapterBase):
             )
 
         items = filtrar_local(items, filtros)
+        total = len(items)
+        per_page = max(filtros.per_page, 1)
+        inicio = (filtros.page - 1) * per_page
+        fim = inicio + per_page
+        pagina = items[inicio:fim]
+        total_pages = (total // per_page) + (1 if total % per_page else 0)
+
         return ResponseEnvelope(
-            data=items,
-            total=len(items),
-            total_pages=1,
-            totals_by_nivel=TotalsByNivel(estadual=len(items)),
+            data=pagina,
+            total=total,
+            total_pages=max(total_pages, 1),
+            totals_by_nivel=TotalsByNivel(estadual=len(pagina)),
         )
+
+    def _extrair_autores_h3(self, h3_texto: str) -> list[Autor]:
+        """
+        Extrai lista de autores do <h3>. Padrões observados:
+          "... AUTOR: DEPUTADO X"
+          "... AUTORES: DEPUTADO X E DEPUTADO Y"
+          "... AUTORES: DEPUTADO X, DEPUTADO Y E DEPUTADO Z"
+        """
+        m = re.search(r"AUTOR(?:ES)?:\s*(.+?)$", h3_texto or "", re.IGNORECASE | re.DOTALL)
+        if not m:
+            return []
+        bloco = m.group(1).strip()
+        # Separar por E/vírgula
+        nomes_brutos = re.split(r"\s*(?:,|\s+E\s+)\s*", bloco)
+        autores: list[Autor] = []
+        for nome in nomes_brutos:
+            nome = nome.strip().rstrip(".")
+            if not nome:
+                continue
+            # Remover prefixo "DEPUTADO/DEPUTADA"
+            tipo = "Deputado"
+            m_dep = re.match(r"DEPUTAD[OA]\s+(.+)", nome, re.IGNORECASE)
+            if m_dep:
+                nome_limpo = m_dep.group(1).strip()
+                nome = f"Deputado {nome_limpo}"
+            autores.append(Autor(nome=nome, uf="MT", tipo=tipo))
+        return autores
 
     def _parsear_detalhe(
         self, html: str, id_proposicao: str, url: str
@@ -275,14 +342,40 @@ class AdapterMT(AdapterBase):
     def _extrair_tipo_numero_ano(
         self, texto: str
     ) -> tuple[str | None, str | None, int | None]:
-        """Extrai sigla+numero+ano de strings tipo 'PL 1/2026' ou texto livre."""
+        """
+        Extrai sigla+numero+ano de strings como:
+          "Projeto de lei complementar nº 1/2026"
+          "Proposta de emenda à Constituição nº 1/2026"
+          "Veto nº 1/2026 Mensagem nº 170/2025 - ..."
+          "PL 42/2026"
+
+        Captura até 5 palavras antes do "nº" e procura match longo→curto
+        no TEXTO_TIPO_PARA_SIGLA.
+        """
         if not texto:
             return None, None, None
-        m = re.search(r"(\w+)\s+n?[º°]?\s*(\d+)/(\d{2,4})", texto)
+        m = re.search(
+            r"((?:[\wáéíóúâêôãõçÁÉÍÓÚÂÊÔÃÕÇ]+\s+){0,5}[\wáéíóúâêôãõçÁÉÍÓÚÂÊÔÃÕÇ]+)"
+            r"\s+n?[º°]?\s*(\d+)\s*/\s*(\d{2,4})",
+            texto,
+        )
         if not m:
             return None, None, None
-        sigla_raw = m.group(1).strip()
-        sigla = TEXTO_TIPO_PARA_SIGLA.get(sigla_raw.lower(), sigla_raw.upper()[:3])
+        prefixo = m.group(1).strip().lower()
+
+        # Tentar match longo→curto no dicionário
+        sigla: str | None = None
+        for chave_long, sig in sorted(
+            TEXTO_TIPO_PARA_SIGLA.items(), key=lambda kv: -len(kv[0])
+        ):
+            if chave_long in prefixo:
+                sigla = sig
+                break
+        if not sigla:
+            # Fallback: 3 primeiras letras da última palavra do prefixo
+            ultima_palavra = prefixo.split()[-1] if prefixo.split() else prefixo
+            sigla = ultima_palavra.upper()[:3]
+
         try:
             ano = int(m.group(3))
             if ano < 100:

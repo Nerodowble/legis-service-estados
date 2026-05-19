@@ -15,7 +15,6 @@ from typing import Any
 
 from src.parsers.xml_utils import parse_xml
 
-
 # Mapas {nome_view: [nome_campo_por_columnnumber]}
 COLUNAS_POR_VIEW: dict[str, list[str]] = {
     # scpro2327.nsf — legislatura corrente (2023-2027)

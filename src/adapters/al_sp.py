@@ -30,17 +30,14 @@ from __future__ import annotations
 
 import io
 import zipfile
-from typing import Iterable
 
 import httpx
 from lxml import etree
 
 from src.adapters.base import AdapterBase, FiltrosBusca
-from src.adapters.filtros import filtrar_local
 from src.config import settings
 from src.errors import ALIndisponivelError, ParserFalhouError
 from src.schemas import (
-    Autor,
     DadosAdicionais,
     ProposicaoNormalizadaRaw,
     ResponseEnvelope,

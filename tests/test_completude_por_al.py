@@ -23,7 +23,6 @@ from httpx import Response
 from src.adapters.base import FiltrosBusca
 from src.orquestrador.registry import get_adapter
 from src.schemas import ProposicaoNormalizadaRaw
-
 from tests.capacidade_por_al import (
     CAPACIDADES,
     NAO_DISPONIVEL,
@@ -207,7 +206,6 @@ async def test_completude_al_mt_listagem():
         return_value=Response(200, text=ALMT_LISTAGEM,
                               headers={"Content-Type": "text/html; charset=utf-8"})
     )
-    cap = CAPACIDADES["al_mt"]
     adapter = get_adapter("al_mt")
     envelope = await adapter.listar(FiltrosBusca(per_page=10))
 

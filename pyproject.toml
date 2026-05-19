@@ -48,7 +48,14 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "RUF"]
-ignore = ["E501"]
+ignore = [
+    "E501",   # line-length (já configurado em line-length=110)
+    "E402",   # module-import-not-at-top (alguns adapters fazem import dentro de função intencionalmente)
+    "B904",   # raise without from in except (tolerado em handlers globais)
+    "B008",   # function-call-in-default-argument (FastAPI Query/Depends é convenção)
+    "RUF002", # ambiguous-unicode-character-docstring (queremos acentos nas docstrings PT-BR)
+    "RUF012", # mutable-class-default (singletons de cache controlados manualmente)
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

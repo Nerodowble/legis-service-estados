@@ -27,7 +27,6 @@ from src.adapters.base import FiltrosBusca
 from src.orquestrador.registry import get_adapter, listar_sources_disponiveis
 from src.schemas import ProposicaoNormalizadaRaw, ResponseEnvelope
 
-
 REGEX_ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 

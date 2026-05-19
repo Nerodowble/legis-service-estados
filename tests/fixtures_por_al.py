@@ -97,7 +97,7 @@ ALECE_LISTAGEM = """<!DOCTYPE html><html><body>
   <tr><td>Descrição:</td></tr>
   <tr><td>Distribuição/Comissões:CTASPLocalização:CTASPEm 20.03.24 - Departamento Legislativo</td></tr>
 </table>
-</body></html>""".encode("utf-8")
+</body></html>""".encode()
 
 # ──────────────────────────────────────────────────────────────────────
 # al_df — CLDF Liferay
@@ -136,8 +136,20 @@ ALMA_JSON = [
 # ──────────────────────────────────────────────────────────────────────
 
 ALMT_LISTAGEM = """<!DOCTYPE html><html><body>
-<a href="/proposicao/cpdoc/172857/visualizar">Proposição</a>
-<a href="/proposicao/cpdoc/171138/visualizar">Proposição</a>
+<div class="col-12">
+  <h3 class="fs-16">VETO PARCIAL APOSTO AO PROJETO DE LEI Nº 864/2023, QUE DISPÕE SOBRE A INSTITUIÇÃO DO CADASTRO ESTADUAL DE PESSOAS ACOMETIDAS DE DOENÇAS RARAS. AUTORES: DEPUTADO DIEGO GUIMARÃES E DEPUTADO EDUARDO BOTELHO</h3>
+  <div class="text-muted mb-2">Veto nº 1/2026 Mensagem nº 170/2025 - Protocolo nº 871/2026</div>
+  <div id="collapse-group-172857">
+    <a href="/proposicao/cpdoc/172857/visualizar">Visualizar</a>
+  </div>
+</div>
+<div class="col-12">
+  <h3 class="fs-16">PROJETO DE LEI Nº 42/2026, QUE INSTITUI POLÍTICA ESTADUAL X. AUTOR: DEPUTADO EDUARDO BOTELHO</h3>
+  <div class="text-muted mb-2">Projeto de Lei nº 42/2026</div>
+  <div id="collapse-group-171138">
+    <a href="/proposicao/cpdoc/171138/visualizar">Visualizar</a>
+  </div>
+</div>
 </body></html>"""
 
 ALMT_DETALHE = """<!DOCTYPE html><html>

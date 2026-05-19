@@ -18,6 +18,8 @@ Parser específico em src/parsers/lotus.py
 
 from __future__ import annotations
 
+import re
+
 import httpx
 
 from src.adapters.base import AdapterBase, FiltrosBusca
