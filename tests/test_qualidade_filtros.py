@@ -216,6 +216,49 @@ def test_bug_willian_keyword_Petroleo_filtra_resultados_irrelevantes():
     assert resultado[0].id_proposicao_origem == "id_match"
 
 
+def test_accent_insensitive_casa_sem_acento_com_acento():
+    """Com flag accent_insensitive=True, 'Petroleo' casa 'Petróleo'."""
+    items = [_fazer_prop(id="1", ementa="Petróleo é recurso natural")]
+
+    # Sem flag: NÃO casa
+    r = filtrar_local(items, FiltrosBusca(keyword="Petroleo"))
+    assert r == []
+
+    # Com flag: CASA
+    r = filtrar_local(
+        items, FiltrosBusca(keyword="Petroleo", accent_insensitive=True)
+    )
+    assert len(r) == 1
+
+
+def test_accent_insensitive_funciona_em_ambos_sentidos():
+    """Flag deve ser simétrica: 'Água' casa 'agua' e 'agua' casa 'Água'."""
+    items_acento = [_fazer_prop(id="A", ementa="Água potável")]
+    items_sem_acento = [_fazer_prop(id="B", ementa="Agua potavel")]
+
+    f = FiltrosBusca(keyword="agua", accent_insensitive=True)
+    assert filtrar_local(items_acento, f)[0].id_proposicao_origem == "A"
+    assert filtrar_local(items_sem_acento, f)[0].id_proposicao_origem == "B"
+
+    f2 = FiltrosBusca(keyword="Água", accent_insensitive=True)
+    assert filtrar_local(items_acento, f2)[0].id_proposicao_origem == "A"
+    assert filtrar_local(items_sem_acento, f2)[0].id_proposicao_origem == "B"
+
+
+def test_accent_insensitive_aplica_em_autor():
+    items = [_fazer_prop(id="1", autores=["José Açúcar"])]
+
+    # Sem flag: 'Jose Acucar' não casa
+    r = filtrar_local(items, FiltrosBusca(autor="Jose Acucar"))
+    assert r == []
+
+    # Com flag: casa
+    r = filtrar_local(
+        items, FiltrosBusca(autor="Jose Acucar", accent_insensitive=True)
+    )
+    assert len(r) == 1
+
+
 def test_bug_willian_sem_acento_documentado_como_limitacao():
     """
     Atenção: 'Petroleo' sem acento NÃO casa com 'Petróleo' com acento.

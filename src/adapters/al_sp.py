@@ -277,6 +277,8 @@ class AdapterSP(AdapterBase):
                     id_doc = self._txt(elem, "IdDocumento")
                     if id_doc == str(id_proposicao):
                         item = self._normalizar(elem)
+                        # Enriquecer com autor + status via página individual
+                        await self._enriquecer_via_pagina(item)
                         return ResponseEnvelope(
                             data=[item],
                             total=1,
@@ -290,3 +292,65 @@ class AdapterSP(AdapterBase):
                             del parent[0]
 
         raise ProposicaoNaoEncontradaError("SP", id_proposicao)
+
+    async def _enriquecer_via_pagina(self, item: ProposicaoNormalizadaRaw) -> None:
+        """
+        Enriquece um item com autor + status via fetch da página individual
+        `/propositura/?id=N`. Falhas silenciosas — autor fica vazio se falhar.
+
+        Estrutura observada (2026-05-19):
+          <td>Autor(es)</td><td>Marcelo Gonçalves</td>
+          <td>Etapa Atual</td><td>Arquivo</td>
+          <td>Último andamento</td><td>08/12/2011 - Arquivado pelo Setor...</td>
+
+        Custo: 1 fetch extra (~80KB) por chamada de detalhe.
+        """
+        from src.parsers import normalizar_texto, parse_html
+        from src.parsers.encoding import decode_response
+        from src.schemas import Autor
+
+        if not item.id_proposicao_origem:
+            return
+
+        url = f"{BASE_URL}/propositura/?id={item.id_proposicao_origem}"
+        try:
+            async with httpx.AsyncClient(
+                timeout=settings.HTTP_TIMEOUT_SECONDS,
+                headers={"User-Agent": settings.USER_AGENT},
+                follow_redirects=True,
+            ) as client:
+                r = await client.get(url)
+                if r.status_code != 200:
+                    return
+                html = decode_response(r)
+        except Exception:
+            return
+
+        tree = parse_html(html)
+
+        # Procurar pares <td>Label</td><td>Valor</td>
+        campos: dict[str, str] = {}
+        for td in tree.css("td"):
+            txt = (td.text(strip=True) or "").rstrip(":").strip()
+            if not txt or len(txt) > 50:
+                continue
+            label = txt.lower()
+            if any(k in label for k in ["autor", "etapa", "andamento", "regime", "apresenta"]):
+                # Procurar próxima <td> irmã com conteúdo
+                proximo = td.next
+                while proximo and proximo.tag != "td":
+                    proximo = proximo.next
+                if proximo:
+                    valor = normalizar_texto(proximo.text(strip=True)) or ""
+                    if valor and label not in campos:
+                        campos[label] = valor
+
+        autor_nome = campos.get("autor(es)") or campos.get("autor")
+        if autor_nome and not item.autores:
+            item.autores = [Autor(nome=autor_nome, uf="SP", tipo="Deputado")]
+
+        status_atual = (
+            campos.get("etapa atual") or campos.get("último andamento") or campos.get("ultimo andamento")
+        )
+        if status_atual and not item.status:
+            item.status = status_atual

@@ -39,6 +39,7 @@ class FiltrosBusca:
     tema: str | None = None
     data_inicio: str | None = None  # YYYY-MM-DD
     data_fim: str | None = None  # YYYY-MM-DD
+    accent_insensitive: bool = False  # quando True, normaliza Unicode antes de comparar keyword/autor
 
     def to_query_dict(self) -> dict[str, Any]:
         """Para uso em logs e telemetria (sem campos None)."""

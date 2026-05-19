@@ -54,7 +54,10 @@ class AdapterAP(AdapterBase):
     # Cache do mapping {nome_normalizado: (id_dep, partido)} construído sob
     # demanda no primeiro fetch que precise enriquecer autor. Singleton
     # dentro do processo (adapter é singleton); zero persistência em disco.
+    # Expira após CACHE_TTL_SECONDS para refletir mudanças de partido/mandato.
     _cache_parlamentares: dict[str, tuple[str, str]] | None = None
+    _cache_parlamentares_ts: float = 0.0
+    CACHE_TTL_SECONDS: float = 6 * 3600  # 6 horas (mandato de deputado raramente muda)
 
     async def listar(self, filtros: FiltrosBusca) -> ResponseEnvelope:
         # Warm-up do cache de parlamentares (silencioso se falhar)
@@ -299,9 +302,17 @@ class AdapterAP(AdapterBase):
         PDT<br><b>Profissão:</b> Administradora', ...)"`.
         Parseamos esse tooltip para extrair Partido + Profissão por deputado.
 
-        Roda apenas uma vez por processo. Falhas silenciosas.
+        Cache TTL controlado: rebuilds após CACHE_TTL_SECONDS para refletir
+        mudanças de mandato/filiação partidária. Falhas silenciosas.
         """
-        if AdapterAP._cache_parlamentares is not None:
+        import time
+
+        agora = time.time()
+        idade = agora - AdapterAP._cache_parlamentares_ts
+        cache_ok = AdapterAP._cache_parlamentares is not None
+        cache_fresco = idade < AdapterAP.CACHE_TTL_SECONDS
+
+        if cache_ok and cache_fresco:
             return
         try:
             async with httpx.AsyncClient(
@@ -314,6 +325,7 @@ class AdapterAP(AdapterBase):
                 html_lista = decode_response(response)
         except Exception:
             AdapterAP._cache_parlamentares = {}
+            AdapterAP._cache_parlamentares_ts = agora  # marca tentativa para não martelar
             return
 
         tree = parse_html(html_lista)
@@ -343,6 +355,7 @@ class AdapterAP(AdapterBase):
                 cache[nome] = (iddep, partido)
 
         AdapterAP._cache_parlamentares = cache
+        AdapterAP._cache_parlamentares_ts = agora
 
     def _normalizar_nome_dep(self, nome: str) -> str:
         """Remove prefixos 'Deputado/Deputada/Dep.' e normaliza espaços."""

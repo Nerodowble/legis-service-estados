@@ -59,6 +59,43 @@ def test_health_sources_lista_11_adapters(client: TestClient):
     assert "al_ap" in sources
 
 
+def test_health_source_probe_invalido_retorna_404(client: TestClient):
+    r = client.get("/health/sources/al_xyz_invalido")
+    assert r.status_code == 404
+
+
+@respx.mock
+def test_health_source_probe_ativo_al_pe_up(client: TestClient):
+    """Probe ativo: AL respondendo OK retorna status=up + latência."""
+    respx.get("https://dadosabertos.alepe.pe.gov.br/api/v1/proposicoes/projetos/").mock(
+        return_value=Response(
+            200, content=b'<?xml version="1.0"?><projetos></projetos>',
+            headers={"Content-Type": "application/xml; charset=utf-8"},
+        )
+    )
+    r = client.get("/health/sources/al_pe")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["source"] == "al_pe"
+    assert body["status"] == "up"
+    assert "latency_ms" in body
+    assert body["latency_ms"] >= 0
+
+
+@respx.mock
+def test_health_source_probe_ativo_al_pe_down(client: TestClient):
+    """Probe ativo: AL falhando retorna status=down + erro."""
+    respx.get("https://dadosabertos.alepe.pe.gov.br/api/v1/proposicoes/projetos/").mock(
+        return_value=Response(503, content=b"")
+    )
+    r = client.get("/health/sources/al_pe")
+    assert r.status_code == 200  # probe sempre 200, info em body
+    body = r.json()
+    assert body["source"] == "al_pe"
+    assert body["status"] == "down"
+    assert body["error"] in {"ALIndisponivelError", "Exception"}
+
+
 def test_openapi_json_disponivel(client: TestClient):
     r = client.get("/openapi.json")
     assert r.status_code == 200

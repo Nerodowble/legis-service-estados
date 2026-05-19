@@ -12,26 +12,48 @@ Regras:
   - numero:  exato (string)
   - ano:     exato (int)
   - tipo:    exato (sigla uppercase)
+
+  Quando filtros.accent_insensitive=True, keyword e autor também são
+  normalizados via unicodedata.NFKD (`Petroleo` casa `Petróleo`, `agua`
+  casa `água`). Default é False para manter retro-compatibilidade.
 """
 
 from __future__ import annotations
+
+import unicodedata
 
 from src.adapters.base import FiltrosBusca
 from src.schemas import ProposicaoNormalizadaRaw
 
 
+def _normalize_text(s: str | None, *, fold_accents: bool) -> str:
+    """Lowercase + opcional Unicode NFKD fold (remove acentos)."""
+    if not s:
+        return ""
+    s = s.lower()
+    if fold_accents:
+        s = unicodedata.normalize("NFKD", s)
+        s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    return s
+
+
 def filtrar_local(
     items: list[ProposicaoNormalizadaRaw], filtros: FiltrosBusca
 ) -> list[ProposicaoNormalizadaRaw]:
+    fold = filtros.accent_insensitive
+
     if filtros.keyword:
-        kw = filtros.keyword.lower()
-        items = [i for i in items if _casa_keyword(i, kw)]
+        kw = _normalize_text(filtros.keyword, fold_accents=fold)
+        items = [i for i in items if _casa_keyword(i, kw, fold_accents=fold)]
     if filtros.autor:
-        autor_kw = filtros.autor.lower()
+        autor_kw = _normalize_text(filtros.autor, fold_accents=fold)
         items = [
             i
             for i in items
-            if any((a.nome or "").lower().find(autor_kw) >= 0 for a in i.autores)
+            if any(
+                autor_kw in _normalize_text(a.nome, fold_accents=fold)
+                for a in i.autores
+            )
         ]
     if filtros.numero:
         items = [i for i in items if (i.numero or "") == filtros.numero]
@@ -43,11 +65,16 @@ def filtrar_local(
     return items
 
 
-def _casa_keyword(item: ProposicaoNormalizadaRaw, kw_lower: str) -> bool:
+def _casa_keyword(
+    item: ProposicaoNormalizadaRaw, kw_normalizado: str, *, fold_accents: bool
+) -> bool:
     campos = [
         item.ementa,
         item.ementa_detalhada,
         item.status,
         " ".join(a.nome or "" for a in item.autores),
     ]
-    return any(kw_lower in (c or "").lower() for c in campos)
+    for c in campos:
+        if kw_normalizado in _normalize_text(c, fold_accents=fold_accents):
+            return True
+    return False

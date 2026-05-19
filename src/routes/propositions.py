@@ -56,6 +56,10 @@ async def fetch_live(
     tema: str | None = Query(None),
     data_inicio: str | None = Query(None, description="YYYY-MM-DD"),
     data_fim: str | None = Query(None, description="YYYY-MM-DD"),
+    accent_insensitive: bool = Query(
+        False,
+        description="Quando true, keyword/autor casam ignorando acentos (Petroleo↔Petróleo)",
+    ),
 ) -> ResponseEnvelope:
     filtros = FiltrosBusca(
         page=page,
@@ -68,6 +72,7 @@ async def fetch_live(
         tema=tema,
         data_inicio=data_inicio,
         data_fim=data_fim,
+        accent_insensitive=accent_insensitive,
     )
 
     if source == "al_estados":
