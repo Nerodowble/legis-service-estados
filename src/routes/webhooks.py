@@ -132,33 +132,26 @@ async def _disparar_callback(callback_url: str, payload: dict) -> None:
         )
 
 
-@router.post("/check", response_model=DiffResponse)
+@router.post(
+    "/check",
+    response_model=DiffResponse,
+    summary="Diff de proposições conhecidas vs estado atual",
+    description=(
+        "Recebe um snapshot do cliente (legis-service principal monitora "
+        "PLs por usuário) e devolve quais mudaram desde a última verificação.\n\n"
+        "**Stateless**: o serviço não armazena snapshots. Quem mantém estado "
+        "é o cliente (envia `content_hash` do que conhece, recebe diff).\n\n"
+        "**Callback opcional**: se `callback_url` for fornecida, dispararemos "
+        "um POST async (BackgroundTasks) com o mesmo payload de response. "
+        "Útil para reagir a mudanças sem manter conexão.\n\n"
+        "**Limite**: snapshot máx 100 items por request (controle de fan-out)."
+    ),
+    responses={
+        200: {"description": "Diff calculado; ver `changes` e `summary`."},
+        422: {"description": "Validação (source desconhecido, snapshot > 100, callback_url inválida)."},
+    },
+)
 async def webhook_check(req: DiffRequest, bg: BackgroundTasks) -> DiffResponse:
-    """
-    Compara um snapshot do cliente contra o estado atual das fontes.
-
-    Body:
-      {
-        "snapshot": [
-          {"source": "al_pe", "id_proposicao_origem": "13539", "content_hash": "abc..."},
-          ...
-        ],
-        "callback_url": "https://legalbot.com/webhook",  // opcional
-        "incluir_unchanged": false
-      }
-
-    Response:
-      {
-        "checked": 2,
-        "changes": [...],  // só items new/changed/not_found/error (a menos
-                           //  que incluir_unchanged=true)
-        "summary": {"new": 0, "changed": 1, "unchanged": 1, ...},
-        "callback_scheduled": false
-      }
-
-    Limite: snapshot.max_length=100 items por request (para controle de
-    fan-out concorrente).
-    """
     sources_validos = set(listar_sources_disponiveis())
     for item in req.snapshot:
         if item.source not in sources_validos:

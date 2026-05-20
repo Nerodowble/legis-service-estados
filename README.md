@@ -87,12 +87,37 @@ URLs disponíveis:
 # Listagem
 curl 'http://localhost:8081/propositions/fetch-live?source=al_pe&ano=2024&keyword=petroleo'
 
-# Detalhe (ID nativo da AL)
+# Detalhe (ID nativo da AL) — traz tramitações + autor com partido quando disponível
 curl 'http://localhost:8081/propositions/fetch-live/al_ap/108457'
 
 # Agregado de todas as 11 ALs em paralelo
 curl 'http://localhost:8081/propositions/fetch-live?source=al_estados&ano=2024&per_page=10'
+
+# Diff: detectar mudanças em proposições conhecidas (até 100 por request)
+curl -X POST 'http://localhost:8081/webhooks/check' \
+  -H 'Content-Type: application/json' \
+  -d '{"snapshot":[{"source":"al_pe","id_proposicao_origem":"16370","content_hash":"abc..."}]}'
+
+# Probe ATIVO de saúde das 11 ALs (latência + status em paralelo)
+curl 'http://localhost:8081/health/sources/check'
+
+# Métricas Prometheus (com ETag/304 — economiza scrape)
+curl -i 'http://localhost:8081/metrics'
 ```
+
+## Endpoints
+
+| Método | Path | O que faz |
+|---|---|---|
+| GET | `/propositions/fetch-live` | Listagem com filtros (ano/tipo/keyword/autor/numero) |
+| GET | `/propositions/fetch-live/{source}/{id}` | Detalhe enriquecido (tramitações, autor com partido) |
+| POST | `/webhooks/check` | Diff snapshot vs estado atual + callback opcional |
+| GET | `/health/sources/check` | Probe ATIVO paralelo das 11 ALs |
+| GET | `/health/sources/{source}` | Probe ATIVO individual |
+| GET | `/metrics` | Prometheus scrape (com ETag) |
+| GET | `/docs` | Swagger UI interativo com examples |
+
+Detalhes em [docs/api-reference.md](docs/api-reference.md).
 
 ## Rodar testes
 

@@ -10,8 +10,12 @@ Base URL local: `http://127.0.0.1:8081`
 | GET | `/health` | Liveness (sempre 200 se app responde) |
 | GET | `/health/ready` | Readiness |
 | GET | `/health/sources` | Estado dos circuit breakers das 11 ALs |
+| GET | `/health/sources/check` | **Probe ATIVO** das 11 ALs em paralelo (latência + up/down) |
+| GET | `/health/sources/{source}` | Probe ATIVO de uma AL específica |
 | GET | `/propositions/fetch-live` | **Listagem** de proposições por AL (ou agregado) |
 | GET | `/propositions/fetch-live/{source}/{id_proposicao}` | **Detalhe** de uma proposição específica |
+| POST | `/webhooks/check` | **Diff** de um snapshot vs estado atual (+ callback opcional) |
+| GET | `/metrics` | Métricas Prometheus (com ETag/304) |
 | GET | `/docs` | Swagger UI interativo |
 | GET | `/redoc` | ReDoc |
 | GET | `/openapi.json` | OpenAPI 3.1 (para importar no Postman/Insomnia) |
@@ -278,7 +282,129 @@ Resposta:
 
 ---
 
-## 3. `GET /health/sources`
+## 3. `POST /webhooks/check`
+
+Diff de um snapshot do cliente contra o estado atual das fontes. Útil para o
+`legis-service` principal detectar mudanças nas proposições que cada usuário
+monitora — sem manter polling síncrono.
+
+### Princípio
+
+O microserviço é **stateless**: quem mantém estado é o cliente. O cliente
+envia `[{source, id_proposicao_origem, content_hash}]`, e respondemos com
+quais mudaram. Opcionalmente disparamos POST async para `callback_url`.
+
+### Request body
+
+```json
+{
+  "snapshot": [
+    {
+      "source": "al_pe",
+      "id_proposicao_origem": "16370",
+      "content_hash": "989a61f9bd6c254c…"
+    },
+    {
+      "source": "al_mt",
+      "id_proposicao_origem": "172857",
+      "content_hash": null
+    }
+  ],
+  "callback_url": "https://legalbot.com/api/webhooks/proposicoes",
+  "incluir_unchanged": false
+}
+```
+
+| Campo | Tipo | Obrigatório | Descrição |
+|---|---|---|---|
+| `snapshot` | array | sim | Lista de até 100 items conhecidos pelo cliente |
+| `snapshot[].source` | str | sim | `al_ap`, `al_pe`, etc. |
+| `snapshot[].id_proposicao_origem` | str | sim | ID nativo retornado pela listagem |
+| `snapshot[].content_hash` | str ou null | não | sha256 do JSON canônico anterior. Se null, item é tratado como `new` |
+| `callback_url` | URL | não | POST async com o mesmo payload de response (BackgroundTasks) |
+| `incluir_unchanged` | bool | não | Default false. Quando true, response também inclui items que não mudaram |
+
+### Como gerar `content_hash` no cliente
+
+Hash sha256 do JSON canônico da proposição, **excluindo** campos voláteis
+(`monitor`, `termometro`, `score_risco`, `indicador_alta_prob`).
+
+```python
+# Python: replicar o hashing do serviço
+import hashlib, json
+def hash_proposicao(p: dict) -> str:
+    p2 = {k: v for k, v in p.items()
+          if k not in {"monitor", "termometro", "score_risco", "indicador_alta_prob"}}
+    canonico = json.dumps(p2, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(canonico.encode("utf-8")).hexdigest()
+```
+
+### Response body
+
+```json
+{
+  "checked": 2,
+  "changes": [
+    {
+      "source": "al_pe",
+      "id_proposicao_origem": "16370",
+      "status_diff": "changed",
+      "content_hash": "989a61f9bd6c254c…",
+      "proposicao": { /* ProposicaoNormalizadaRaw completa */ },
+      "erro": null
+    },
+    {
+      "source": "al_mt",
+      "id_proposicao_origem": "172857",
+      "status_diff": "new",
+      "content_hash": "a1b2c3d4e5f6…",
+      "proposicao": { /* ... */ }
+    }
+  ],
+  "summary": {"new": 1, "changed": 1},
+  "callback_scheduled": true
+}
+```
+
+### Valores de `status_diff`
+
+| Valor | Significado |
+|---|---|
+| `new` | snapshot tinha `content_hash: null` — item nunca visto |
+| `changed` | hash do snapshot ≠ hash atual; campo `proposicao` traz estado novo |
+| `unchanged` | hash bate; `proposicao` omitido (só na response se `incluir_unchanged=true`) |
+| `not_found` | upstream não acha mais essa proposição (arquivada/removida) |
+| `error` | falha técnica; veja campo `erro` |
+
+### Callback assíncrono
+
+Se `callback_url` for fornecida:
+1. Response síncrono volta normalmente (com `callback_scheduled: true`)
+2. Em background (FastAPI BackgroundTasks), fazemos POST com `Content-Type: application/json` e body idêntico ao response
+3. Falhas no callback são apenas logadas — não afetam a chamada original
+
+### Exemplo cURL
+
+```bash
+curl -X POST http://localhost:8081/webhooks/check \
+  -H "Content-Type: application/json" \
+  -d '{
+    "snapshot": [
+      {"source": "al_pe", "id_proposicao_origem": "16370"}
+    ]
+  }'
+```
+
+### Códigos
+
+| Código | Quando |
+|---|---|
+| `200` | Diff calculado (mesmo com erros individuais nos items — eles vão no campo `erro` da entrada) |
+| `422` | source desconhecido, snapshot > 100 items, ou callback_url inválida |
+
+---
+
+## 4. `GET /health/sources`
 
 Estado dos circuit breakers por AL — útil para monitoramento e debug.
 
@@ -331,7 +457,60 @@ Ajustável globalmente via `RATE_LIMIT_FATOR` no `.env` (multiplicador).
 
 ---
 
-## 5. Observabilidade
+## 5. `GET /metrics` (Prometheus + ETag)
+
+Endpoint Prometheus em `text/plain` para scraping. Suporta cache HTTP via
+ETag/If-None-Match.
+
+### Headers de resposta
+
+| Header | Valor |
+|---|---|
+| `ETag` | `W/"<sha256 truncado>"` (weak) |
+| `Cache-Control` | `max-age=5` |
+| `Content-Type` | `text/plain; version=0.0.4; charset=utf-8` |
+
+### Comportamento 304
+
+Cliente Prometheus pode mandar `If-None-Match` no scrape seguinte. Se o
+payload **não mudou** desde o último, devolvemos `304 Not Modified` (sem body):
+
+```bash
+# Primeira coleta
+curl -i http://localhost:8081/metrics
+# < ETag: W/"abc123…"
+
+# Coleta seguinte (3s depois)
+curl -i http://localhost:8081/metrics -H 'If-None-Match: W/"abc123…"'
+# > HTTP/1.1 304 Not Modified
+```
+
+### Métricas expostas
+
+```
+legis_estados_requests_total{source, operacao, outcome}        Counter
+legis_estados_items_returned_total{source, operacao}           Counter
+legis_estados_upstream_errors_total{source, tipo}              Counter
+legis_estados_upstream_duration_seconds{source, operacao}      Histogram
+legis_estados_circuit_breaker_state{source}                    Gauge (0=closed, 1=half, 2=open)
+```
+
+Queries Prometheus prontas para Grafana:
+
+```promql
+# req/s por source
+rate(legis_estados_requests_total[5m])
+
+# p95 de latência upstream por source
+histogram_quantile(0.95, sum(rate(legis_estados_upstream_duration_seconds_bucket[5m])) by (source, le))
+
+# alerta quando breaker abrir
+legis_estados_circuit_breaker_state > 0
+```
+
+---
+
+## 6. Observabilidade
 
 ### Logs estruturados (structlog)
 
@@ -367,13 +546,15 @@ Sem o env, o setup é **no-op** (zero overhead).
 
 ---
 
-## 6. Limitações conhecidas
+## 7. Limitações conhecidas
 
 | Limitação | Justificativa |
 |---|---|
-| Filtro `keyword` não é accent-insensitive (`Petroleo` ≠ `Petróleo`) | Trade-off para evitar surpresas com normalização Unicode |
+| Filtro `keyword` é case-insensitive mas **não** accent-insensitive por default | Use `?accent_insensitive=true` para casar `Petroleo` com `Petróleo` |
 | Paginação client-side em ALs sem suporte nativo (al_ap, al_pe, al_ma, etc.) | Fonte upstream devolve página inteira; recortamos local |
 | `tramitacoes[*].despacho/regime/apreciacao/ambito` quase sempre null | Portais estaduais raramente expõem esses campos |
 | Campos VIGIL (`termometro`, `score_risco`) sempre null | Scoring é responsabilidade do `legis-service` principal |
 | `al_rj` HTTP (não HTTPS) | Lotus Notes legado dos anos 90 — exceção documentada |
-| `al_sp` baixa dump de ~50MB por request | Trade-off do dump público (cache HTTP no consumidor ajuda) |
+| `al_sp` baixa dump de ~16MB por request | Trade-off do dump público (HTTP Cache-Control no consumidor ajuda) |
+| `al_sp` autores em listagem sempre vazios | `proposituras.xml` não inclui autor (`autores.zip` retorna 404). Detalhe ALESP enriquece via `/propositura/?id=N`. |
+| `al_pa` paginação só primeira página | Postback DevExpress completo é instável; primeira página + filtros nativos cobrem 95% dos casos |

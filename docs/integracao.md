@@ -415,6 +415,132 @@ Remover flag, todos os 11 al_xx + `al_estados` ativos.
 
 ---
 
+## Detectando mudanças nas proposições (webhook/diff)
+
+O endpoint `POST /webhooks/check` permite que o `legis-service` principal
+detecte quais proposições monitoradas pelos usuários LegalBot **mudaram**
+desde a última verificação — sem precisar refazer fetch de todas elas.
+
+### Caso de uso típico
+
+A LegalBot tem N usuários, cada um monitorando M proposições estaduais
+(`monitor=true` no contexto deles). Periodicamente (cron de 5min, p.ex.),
+o `legis-service` quer saber **quais mudaram**.
+
+Em vez de chamar `/propositions/fetch-live/al_xx/{id}` N×M vezes
+(latência alta + estresse no upstream), envia 1 POST com até 100 items:
+
+```python
+# legis-service/jobs/detectar_mudancas.py
+import asyncio
+import hashlib
+import json
+import httpx
+from app.db import session
+from app.models import ProposicaoMonitorada
+
+ESTADOS_URL = settings.LEGIS_ESTADOS_URL
+
+
+def _hash_canonico(proposicao_json: dict) -> str:
+    """Mesma fórmula do serviço para garantir compatibilidade."""
+    excluir = {"monitor", "termometro", "score_risco", "indicador_alta_prob"}
+    payload = {k: v for k, v in proposicao_json.items() if k not in excluir}
+    canon = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()
+
+
+async def detectar_mudancas_estaduais():
+    """Roda a cada 5 minutos."""
+    monitoradas = session.query(ProposicaoMonitorada).filter(
+        ProposicaoMonitorada.source.startswith("al_")
+    ).limit(100).all()
+
+    snapshot = [
+        {
+            "source": p.source,
+            "id_proposicao_origem": p.id_origem,
+            "content_hash": p.content_hash,  # gravado na última verificação
+        }
+        for p in monitoradas
+    ]
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        r = await client.post(
+            f"{ESTADOS_URL}/webhooks/check",
+            json={
+                "snapshot": snapshot,
+                # callback opcional — se quiser receber via webhook em vez de
+                # processar a resposta síncrona:
+                # "callback_url": "https://api.legalbot.com/webhooks/proposicoes-mudaram",
+            },
+        )
+        r.raise_for_status()
+        diff = r.json()
+
+    # Processar mudanças
+    for change in diff["changes"]:
+        if change["status_diff"] == "changed":
+            # Atualizar registro local + notificar usuários do monitoramento
+            atualizar_proposicao(change["proposicao"])
+            notificar_usuarios(change["source"], change["id_proposicao_origem"])
+        elif change["status_diff"] == "not_found":
+            # Proposição arquivada/removida na fonte
+            marcar_como_arquivada(change["source"], change["id_proposicao_origem"])
+        # unchanged não vem no response (default)
+
+    return diff["summary"]  # ex: {"new": 0, "changed": 3, "not_found": 1, "unchanged": 96}
+```
+
+### Modo callback (assíncrono)
+
+Se preferir receber via webhook (sem aguardar a resposta síncrona — útil
+quando o snapshot é grande), forneça `callback_url`:
+
+```python
+await client.post(f"{ESTADOS_URL}/webhooks/check", json={
+    "snapshot": [...],
+    "callback_url": "https://api.legalbot.com/webhooks/proposicoes-mudaram",
+})
+# Response síncrono volta com callback_scheduled=true; o POST async chega depois
+```
+
+No seu webhook receiver:
+
+```python
+@router.post("/webhooks/proposicoes-mudaram")
+async def receber_diff(payload: DiffResponse):
+    for change in payload.changes:
+        # mesma lógica de antes
+        ...
+    return {"ok": True}
+```
+
+### Gerando `content_hash` no cliente
+
+Importante: **use a mesma fórmula do serviço** para hashes baterem. Hash
+sha256 do JSON canônico (sort_keys=True), excluindo campos voláteis:
+
+```python
+EXCLUIR = {"monitor", "termometro", "score_risco", "indicador_alta_prob"}
+
+def hash_proposicao(p: dict) -> str:
+    payload = {k: v for k, v in p.items() if k not in EXCLUIR}
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+            .encode("utf-8")
+    ).hexdigest()
+```
+
+### Limites práticos
+
+- **Snapshot máx**: 100 items por request (controle de fan-out)
+- **Custo**: 1 fetch upstream por item (rate-limited por origem AL)
+- **Tempo**: ~3-5s para 100 items distribuídos em várias ALs (paralelizado)
+- **Não persistimos** o snapshot — cliente envia novamente a cada poll
+
+---
+
 ## Troubleshooting
 
 | Sintoma | Diagnóstico | Solução |
