@@ -415,6 +415,109 @@ Remover flag, todos os 11 al_xx + `al_estados` ativos.
 
 ---
 
+## Monitoramento (Prometheus + probe ativo)
+
+### Scrape Prometheus em `/metrics`
+
+O endpoint expõe métricas em formato Prometheus padrão. **Importante**:
+suporta `ETag`/`If-None-Match` (304 Not Modified) — economiza banda quando
+o scrape interval é menor que o intervalo de mudança das métricas.
+
+Configuração mínima no `prometheus.yml`:
+
+```yaml
+scrape_configs:
+  - job_name: legis-service-estados
+    scrape_interval: 15s
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['legis-service-estados:8081']
+```
+
+Para honrar o ETag (Prometheus 2.45+ suporta `enable_http2: true` mas
+não envia `If-None-Match` por padrão — o ETag aqui é mais útil para
+clientes HTTP genéricos que façam polling).
+
+### Métricas-chave para dashboards
+
+| Métrica | Tipo | Labels | Pra que serve |
+|---|---|---|---|
+| `legis_estados_requests_total` | Counter | source, operacao, outcome | Volume de requests por AL |
+| `legis_estados_upstream_duration_seconds` | Histogram | source, operacao | Latência p50/p95/p99 por AL |
+| `legis_estados_upstream_errors_total` | Counter | source, tipo | Erros por tipo (timeout, parser, etc.) |
+| `legis_estados_circuit_breaker_state` | Gauge | source | 0=closed, 1=half-open, 2=open |
+| `legis_estados_items_returned_total` | Counter | source, operacao | Volume de items entregues |
+
+### Alertas sugeridos (PromQL)
+
+```promql
+# Circuit breaker aberto há mais de 5 minutos
+legis_estados_circuit_breaker_state == 2
+
+# p95 de latência acima de 8s
+histogram_quantile(0.95,
+  sum(rate(legis_estados_upstream_duration_seconds_bucket[5m])) by (source, le)
+) > 8
+
+# Taxa de erro acima de 5% nos últimos 10 minutos
+sum(rate(legis_estados_upstream_errors_total[10m])) by (source)
+  /
+sum(rate(legis_estados_requests_total[10m])) by (source) > 0.05
+```
+
+### Probe ativo `/health/sources/check`
+
+Diferente do `/health/sources` (passivo — só lê estado dos breakers),
+este endpoint **faz fetch real** em cada AL e mede latência. Útil para:
+
+- **Dashboard de status**: mostrar "AL X está fora há Y minutos"
+- **Sanity check pós-deploy**: confirmar que cada upstream ainda responde
+- **Diagnóstico**: descobrir se uma AL específica está degradada
+
+```python
+# Exemplo: cron a cada 5min para detectar ALs problemáticas
+import httpx
+
+async def verificar_saude_estaduais():
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        r = await client.get(f"{ESTADOS_URL}/health/sources/check")
+        r.raise_for_status()
+        data = r.json()
+
+    if data["summary"]["down"] > 0:
+        ALs_off = [s["source"] for s in data["sources"] if s["status"] == "down"]
+        alertar_devops(
+            f"{len(ALs_off)}/11 ALs estaduais offline agora: {ALs_off}"
+        )
+
+    # Salvar latências em série temporal local pra Grafana
+    for s in data["sources"]:
+        registrar_latencia(s["source"], s["latency_ms"], s["status"])
+```
+
+Resposta exemplo:
+
+```json
+{
+  "checked_at_unix": 1716234567,
+  "summary": {"total": 11, "up": 10, "down": 1},
+  "sources": [
+    {"source": "al_ap", "status": "up", "latency_ms": 2820.0,
+     "breaker": "closed", "items_retornados": 1, "total_upstream": 35},
+    {"source": "al_rj", "status": "down", "latency_ms": 534.0,
+     "breaker": "closed", "error": "ALIndisponivelError",
+     "detail": "Server disconnected without sending a response."}
+  ]
+}
+```
+
+Para probe individual: `GET /health/sources/al_pe`.
+
+> **Custo**: probe paralelo demora ~5-10s (limitado pela AL mais lenta).
+> NÃO chame em hot path; use cron de 1-5 minutos.
+
+---
+
 ## Detectando mudanças nas proposições (webhook/diff)
 
 O endpoint `POST /webhooks/check` permite que o `legis-service` principal

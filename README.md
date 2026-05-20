@@ -93,6 +93,9 @@ curl 'http://localhost:8081/propositions/fetch-live/al_ap/108457'
 # Agregado de todas as 11 ALs em paralelo
 curl 'http://localhost:8081/propositions/fetch-live?source=al_estados&ano=2024&per_page=10'
 
+# Filtro accent-insensitive (Petroleo ≡ Petróleo)
+curl 'http://localhost:8081/propositions/fetch-live?source=al_pe&keyword=Petroleo&accent_insensitive=true'
+
 # Diff: detectar mudanças em proposições conhecidas (até 100 por request)
 curl -X POST 'http://localhost:8081/webhooks/check' \
   -H 'Content-Type: application/json' \
