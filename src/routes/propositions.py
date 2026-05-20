@@ -44,7 +44,28 @@ SourceLiteral = Literal[
 ]
 
 
-@router.get("/fetch-live", response_model=ResponseEnvelope)
+@router.get(
+    "/fetch-live",
+    response_model=ResponseEnvelope,
+    summary="Listagem de proposições (legis-service contract)",
+    description=(
+        "Listagem paginada com filtros. Contrato compatível com o "
+        "/propositions/fetch-live do legis-service principal.\n\n"
+        "**Sources estaduais**: `al_ap`, `al_ba`, `al_ce`, `al_df`, `al_ma`, `al_mt`, "
+        "`al_pa`, `al_pe`, `al_rj`, `al_sc`, `al_sp`.\n\n"
+        "**Source agregado**: `al_estados` faz fan-out paralelo em todas as 11 ALs.\n\n"
+        "**Filtros locais**: keyword/autor são aplicados em memória após o fetch "
+        "(fallback quando a fonte não suporta busca nativa). Use "
+        "`?accent_insensitive=true` para casar 'Petroleo' com 'Petróleo'."
+    ),
+    responses={
+        200: {"description": "Lista de proposições (possivelmente vazia, status válido)."},
+        422: {"description": "Validação de query (source inválido, per_page > 100, etc.)"},
+        451: {"description": "AL bloqueada institucionalmente (RN, MG)."},
+        502: {"description": "Parser falhou — fonte mudou estrutura HTML/XML."},
+        503: {"description": "AL upstream indisponível (DNS, timeout, 5xx)."},
+    },
+)
 async def fetch_live(
     source: SourceLiteral = Query(..., description="Source da AL ou 'al_estados' para agregar"),
     page: int = Query(1, ge=1),
@@ -82,7 +103,21 @@ async def fetch_live(
     return await _fetch_single(source, filtros)
 
 
-@router.get("/fetch-live/{source}/{id_proposicao}", response_model=ResponseEnvelope)
+@router.get(
+    "/fetch-live/{source}/{id_proposicao}",
+    response_model=ResponseEnvelope,
+    summary="Detalhe de uma proposição por ID nativo",
+    description=(
+        "Busca uma proposição específica usando o `id_proposicao_origem` "
+        "retornado na listagem. Para adapters com detail-fetch implementado "
+        "(11/11), traz tramitações + autor enriquecido + status + URL canônica."
+    ),
+    responses={
+        200: {"description": "Proposição encontrada (envelope com 1 item)."},
+        404: {"description": "Proposição não encontrada na AL."},
+        503: {"description": "AL upstream indisponível."},
+    },
+)
 async def fetch_detalhe(source: SourceLiteral, id_proposicao: str) -> ResponseEnvelope:
     """Busca uma proposição específica pelo ID nativo da AL."""
     if source == "al_estados":

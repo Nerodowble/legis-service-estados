@@ -29,7 +29,7 @@ from src.errors import (
 )
 from src.observability.logger import logger
 from src.observability.metrics import setup_metrics
-from src.routes import health_router, propositions_router
+from src.routes import health_router, propositions_router, webhooks_router
 
 
 @asynccontextmanager
@@ -61,6 +61,7 @@ app.add_middleware(
 # Rotas
 app.include_router(health_router)
 app.include_router(propositions_router)
+app.include_router(webhooks_router)
 
 
 # Observabilidade
@@ -122,13 +123,37 @@ async def root() -> dict:
 
 
 @app.get("/metrics", include_in_schema=False)
-async def prometheus_metrics() -> Response:
+async def prometheus_metrics(request: Request) -> Response:
     """
     Endpoint Prometheus em formato text/plain.
     Atualiza gauges de circuit breaker antes de devolver o snapshot.
+
+    Suporta cache HTTP via ETag/If-None-Match:
+      - Calcula ETag (sha256 do payload, weak)
+      - Compara com `If-None-Match` do cliente
+      - Devolve 304 Not Modified quando o conteúdo não mudou
+        (economiza banda do scrape Prometheus a cada N segundos)
     """
+    import hashlib
+
     from src.observability import atualizar_gauges_breakers
     from src.orquestrador.circuit_breaker import breakers
 
     atualizar_gauges_breakers(breakers.get_estado_resumido())
-    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+    payload = generate_latest()
+
+    # ETag fraco (W/ prefix) — scrape do Prometheus muda a cada request
+    # de qualquer counter/histogram, mas se nenhum métrica mudou desde a
+    # última coleta, o consumidor pode pular o parse.
+    etag_val = hashlib.sha256(payload).hexdigest()[:16]
+    etag = f'W/"{etag_val}"'
+
+    if_none_match = request.headers.get("if-none-match", "")
+    if if_none_match and if_none_match.strip() == etag:
+        return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "max-age=5"})
+
+    return Response(
+        content=payload,
+        media_type=CONTENT_TYPE_LATEST,
+        headers={"ETag": etag, "Cache-Control": "max-age=5"},
+    )

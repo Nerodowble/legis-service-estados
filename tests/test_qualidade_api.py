@@ -108,6 +108,32 @@ def test_swagger_renderiza_docs(client: TestClient):
     assert "swagger" in r.text.lower()
 
 
+def test_metrics_endpoint_devolve_etag(client: TestClient):
+    """Scrape Prometheus tem ETag pra suportar 304 Not Modified."""
+    r = client.get("/metrics")
+    assert r.status_code == 200
+    assert "ETag" in r.headers
+    assert r.headers["ETag"].startswith('W/"')
+    assert "Cache-Control" in r.headers
+
+
+def test_metrics_if_none_match_retorna_304(client: TestClient):
+    """Se cliente mandar If-None-Match igual ao ETag atual → 304."""
+    r1 = client.get("/metrics")
+    etag = r1.headers["ETag"]
+
+    r2 = client.get("/metrics", headers={"If-None-Match": etag})
+    assert r2.status_code == 304
+    assert r2.headers["ETag"] == etag
+
+
+def test_metrics_if_none_match_diferente_retorna_200(client: TestClient):
+    r = client.get("/metrics", headers={"If-None-Match": 'W/"stale_hash_qualquer"'})
+    assert r.status_code == 200
+    # Body veio normalmente
+    assert b"legis_estados" in r.content
+
+
 # ──────────────────────────────────────────────────────────────────────
 # /propositions/fetch-live — validações de input
 # ──────────────────────────────────────────────────────────────────────
@@ -373,6 +399,80 @@ XML_ALEPE_DETALHE = b"""<?xml version="1.0" encoding="UTF-8"?>
     <autores><autor nome="Joao Paulo do PT" tipo="DEPUTADO"/></autores>
   </projeto>
 </projetos>"""
+
+
+HTML_ALESP_PROPOSITURA = """<!DOCTYPE html>
+<html><head><title>Projeto de Lei nº 673, de 1996</title></head>
+<body>
+<table>
+  <tr><td>Autor(es)</td><td>Marcelo Gonçalves</td></tr>
+  <tr><td>Etapa Atual</td><td>Arquivo</td></tr>
+  <tr><td>Último andamento</td><td>08/12/2011 - Arquivado pelo Setor de Arquivo</td></tr>
+</table>
+<h3>Tramitação</h3>
+<table>
+  <tr><th>Data</th><th>Descrição</th></tr>
+  <tr><td>19/10/1996</td><td>Publicado no Diário Oficial</td></tr>
+  <tr><td>22/10/1996</td><td>Publicada a errata do Projeto de Lei</td></tr>
+  <tr><td>23/10/1996</td><td>Pauta de 1ª Sessão</td></tr>
+  <tr><td>30/10/1996</td><td>Pauta de 5ª Sessão</td></tr>
+</table>
+</body></html>"""
+
+
+@respx.mock
+def test_detalhe_al_sp_enriquece_com_tramitacoes_da_pagina(client: TestClient):
+    """al_sp.detalhe deve fazer fan-out:
+       1. baixar proposituras.zip
+       2. encontrar item por IdDocumento
+       3. fazer fetch da página individual e extrair tramitações + autor
+    """
+    import io
+    import zipfile
+
+    # Construir um ZIP com 1 propositura
+    xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+<proposituras>
+  <propositura>
+    <AnoLegislativo>1996</AnoLegislativo>
+    <Ementa>Autoriza tratamento da asma bronquica</Ementa>
+    <DtPublicacao>1996-10-18T00:00:00-02:00</DtPublicacao>
+    <IdDocumento>3238</IdDocumento>
+    <IdNatureza>1</IdNatureza>
+    <NroLegislativo>673</NroLegislativo>
+  </propositura>
+</proposituras>"""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("proposituras.xml", xml)
+    zip_bytes = buf.getvalue()
+
+    respx.get(
+        "https://www.al.sp.gov.br/repositorioDados/processo_legislativo/proposituras.zip"
+    ).mock(return_value=Response(200, content=zip_bytes,
+                                  headers={"Content-Type": "application/zip"}))
+    respx.get("https://www.al.sp.gov.br/propositura/").mock(
+        return_value=Response(200, text=HTML_ALESP_PROPOSITURA,
+                              headers={"Content-Type": "text/html; charset=utf-8"})
+    )
+
+    r = client.get("/propositions/fetch-live/al_sp/3238")
+    assert r.status_code == 200
+    item = r.json()["data"][0]
+    assert item["id_proposicao_origem"] == "3238"
+    assert item["numero"] == "673"
+    assert item["ano"] == 1996
+    # Autor enriquecido via página individual
+    assert item["autores"][0]["nome"] == "Marcelo Gonçalves"
+    # Tramitações extraídas da tabela Data/Descrição (4 entradas, ordem reversa)
+    assert len(item["tramitacoes"]) == 4
+    # Primeira = mais recente
+    descs = [t["descricao"] for t in item["tramitacoes"]]
+    assert descs[0] == "Pauta de 5ª Sessão"
+    assert descs[-1] == "Publicado no Diário Oficial"
+    # Datas em formato ISO
+    assert item["tramitacoes"][0]["data"] == "1996-10-30"
+    assert item["tramitacoes"][-1]["data"] == "1996-10-19"
 
 
 @respx.mock

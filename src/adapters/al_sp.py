@@ -295,13 +295,16 @@ class AdapterSP(AdapterBase):
 
     async def _enriquecer_via_pagina(self, item: ProposicaoNormalizadaRaw) -> None:
         """
-        Enriquece um item com autor + status via fetch da página individual
-        `/propositura/?id=N`. Falhas silenciosas — autor fica vazio se falhar.
+        Enriquece um item com autor + status + tramitações via fetch da
+        página individual `/propositura/?id=N`. Falhas silenciosas.
 
         Estrutura observada (2026-05-19):
           <td>Autor(es)</td><td>Marcelo Gonçalves</td>
           <td>Etapa Atual</td><td>Arquivo</td>
           <td>Último andamento</td><td>08/12/2011 - Arquivado pelo Setor...</td>
+
+          E uma <table> separada com cabeçalho [Data, Descrição] contendo
+          todas as tramitações cronológicas.
 
         Custo: 1 fetch extra (~80KB) por chamada de detalhe.
         """
@@ -354,3 +357,60 @@ class AdapterSP(AdapterBase):
         )
         if status_atual and not item.status:
             item.status = status_atual
+
+        # Extrair tramitações: <table> com cabeçalho [Data, Descrição]
+        tramitacoes = self._extrair_tramitacoes_pagina(tree)
+        if tramitacoes and not item.tramitacoes:
+            item.tramitacoes = tramitacoes
+
+    def _extrair_tramitacoes_pagina(self, tree) -> list:
+        """
+        Extrai tramitações da página individual ALESP.
+
+        Localiza a <table> cujo header é exatamente [Data, Descrição],
+        parseia cada <tr> seguinte como uma tramitação. Mais recente
+        primeiro (convenção do contrato).
+        """
+        from src.parsers import normalizar_texto
+        from src.schemas import Tramitacao
+
+        tramitacoes: list[Tramitacao] = []
+        for tabela in tree.css("table"):
+            primeira_tr = tabela.css_first("tr")
+            if not primeira_tr:
+                continue
+            headers = [
+                (c.text(strip=True) or "").lower()
+                for c in primeira_tr.css("th, td")
+            ]
+            if not (
+                any("data" in h for h in headers)
+                and any("descri" in h for h in headers)
+            ):
+                continue
+
+            idx_data = next(i for i, h in enumerate(headers) if "data" in h)
+            idx_desc = next(i for i, h in enumerate(headers) if "descri" in h)
+
+            for tr in tabela.css("tr")[1:]:  # pula header
+                cells = tr.css("td")
+                if len(cells) <= max(idx_data, idx_desc):
+                    continue
+                data_br = (cells[idx_data].text(strip=True) or "").strip()
+                desc = normalizar_texto(cells[idx_desc].text(strip=True)) or ""
+                if not data_br or not desc:
+                    continue
+                tramitacoes.append(
+                    Tramitacao(
+                        data=self._normalizar_data(data_br),
+                        descricao=desc,
+                        sequencia=len(tramitacoes) + 1,
+                    )
+                )
+            break  # só processa a primeira tabela compatível
+
+        # Mais recente primeiro
+        tramitacoes.reverse()
+        for i, t in enumerate(tramitacoes, start=1):
+            t.sequencia = i
+        return tramitacoes
