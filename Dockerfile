@@ -15,5 +15,9 @@ ENV PYTHONUNBUFFERED=1 \
 COPY --from=builder /install /install
 COPY src /app/src
 USER 1000
-EXPOSE 8080
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "2"]
+
+# Porta configurável via variável PORT (Hugging Face Spaces injeta 7860,
+# Fly/Koyeb/Render injetam $PORT). Default 8080 quando rodando local.
+ENV PORT=8080
+EXPOSE 8080 7860
+CMD ["sh", "-c", "uvicorn src.main:app --host 0.0.0.0 --port ${PORT} --workers 2"]
